@@ -47,6 +47,12 @@ const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;
 async function boot() {
   tg?.ready?.();
   tg?.expand?.();
+  // Свайп по карте не должен сворачивать мини-приложение (Telegram Bot API 7.7+).
+  tg?.disableVerticalSwipes?.();
+  // Старые клиенты Telegram: гасим протягивание страницы вне прокручиваемых панелей.
+  document.addEventListener('touchmove', e => {
+    if (!(e.target as HTMLElement).closest?.('.sheet, .screen')) e.preventDefault();
+  }, { passive: false });
   try {
     if (tg?.initData) await client.loginTelegram(tg.initData);
     else {
@@ -255,7 +261,8 @@ async function gameScreen() {
   }
   renderHud();
   requestAnimationFrame(frame);
-  setInterval(renderHud, 1000);
+  // Раз в секунду обновляется только таймер в верхней панели — открытая панель не перерисовывается.
+  setInterval(() => renderHud(false), 1000);
 }
 
 async function drawMinimap() {
@@ -294,7 +301,7 @@ function resize() {
   ctx.setTransform(d, 0, 0, d, 0, 0);
 }
 
-function renderHud() {
+function renderHud(withSheet = true) {
   const st = client.state;
   if (!st) return;
   const me = st.match.players.find(p => p.id === st.view.me.id);
@@ -321,7 +328,7 @@ function renderHud() {
   if (sp) sp.onclick = () => (player!.setSpeed(player!.speed === 1 ? 2 : 1), renderHud());
   const sk = document.getElementById('sk');
   if (sk) sk.onclick = () => player!.skip();
-  renderSheet();
+  if (withSheet) renderSheet();
 }
 
 function toggleSheet(s: typeof sheet) {
@@ -329,7 +336,18 @@ function toggleSheet(s: typeof sheet) {
   renderSheet();
 }
 
+/** Перерисовка панели с сохранением прокрутки. */
 function renderSheet() {
+  const el = document.getElementById('sheet')!;
+  const kind = `${sheet}|${selected ?? ''}`;
+  const top = el.dataset.kind === kind ? el.querySelector('.sheet')?.scrollTop ?? 0 : 0;
+  renderSheetContent();
+  el.dataset.kind = kind;
+  const box = el.querySelector('.sheet');
+  if (box) box.scrollTop = top;
+}
+
+function renderSheetContent() {
   const el = document.getElementById('sheet')!;
   const st = client.state!;
   const me = st.view.me;
