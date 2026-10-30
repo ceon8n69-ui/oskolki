@@ -334,6 +334,8 @@ export function validateOrder(
       }
       return fail('unknown_action');
     }
+    case 'surrender':
+      return { ok: true };
     case 'research': {
       if (!Array.isArray(order.queue) || order.queue.length > 10) return fail('bad_queue');
       const known = new Set(player.researched);

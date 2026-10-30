@@ -112,7 +112,7 @@ export interface ChunkView {
   supply: number[]; // 1 — своя зона снабжения (слой логистики)
 }
 
-export type MatchPhase = 'lobby' | 'planning' | 'resolving' | 'finished';
+export type MatchPhase = 'lobby' | 'planning' | 'resolving' | 'finished' | 'deleted';
 
 export interface MatchInfo {
   id: string;
@@ -121,13 +121,15 @@ export interface MatchInfo {
   turn: number;
   deadline: string | null; // ISO
   maxPlayers: number;
-  players: { id: PlayerId; name: string; ready: boolean; isBot: boolean; faction: string; color: string; replacedByBot?: boolean }[];
+  players: { id: PlayerId; name: string; ready: boolean; isBot: boolean; faction: string; color: string; replacedByBot?: boolean; eliminated?: boolean; surrendered?: boolean }[];
   winner: PlayerId | null;
   winners?: PlayerId[];
   inviteCode: string;
   victory?: string;
   turnLimit?: number | null;
   alliances?: boolean;
+  /** Сведения о запрашивающем пользователе (в списке «Мои партии» и в состоянии партии). */
+  me?: { playerId: PlayerId; isCreator: boolean; surrendered: boolean; eliminated: boolean; archived: boolean };
 }
 
 /** Ответ GET /api/matches/:id/state — всё, что нужно клиенту для отрисовки хода. */

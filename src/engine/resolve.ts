@@ -85,6 +85,9 @@ export function resolveTurn(b: Balance, input: GameState, orders: SubmittedOrder
   // Истёкшие состояния (например, подавление прошлого хода).
   for (const u of state.units) u.statuses = u.statuses.filter(s => s.expiresTurn === null || s.expiresTurn >= state.turn);
 
+  // ---------- 0. Сдача: до проверки приказов, остальные приказы сдавшегося отклоняются ----------
+  for (const so of [...orders].filter(o => o.order.kind === 'surrender').sort((a, c) => (a.playerId < c.playerId ? -1 : 1))) applySurrender(state, so.playerId, log, players);
+
   // ---------- 1. Проверка приказов и списание ресурсов ----------
   const vision0 = computeAllVision(b, state);
   const { accepted, rejected } = validateAll(b, state, orders, vision0);
@@ -1127,3 +1130,36 @@ function advanceWorldEvents(b: Balance, state: GameState, log: EventLog, players
   log.push({ t: 'world_event', eventId: id, phase: 'start', endTurn: ev.endTurn }, players);
 }
 
+
+/**
+ * Сдача игрока. Правила выбытия: отряды распускаются, города становятся нейтральными (без гарнизона,
+ * очередь и запас производства сбрасываются), обелиски разрушаются, договоры расторгаются.
+ * Повторная сдача ничего не меняет.
+ */
+function applySurrender(state: GameState, playerId: PlayerId, log: EventLog, players: PlayerId[]): void {
+  const p = playerOf(state, playerId);
+  if (!p || p.eliminated) return;
+  p.eliminated = true;
+  const unitsDisbanded = state.units.filter(u => u.owner === playerId).length;
+  state.units = state.units.filter(u => u.owner !== playerId);
+  let citiesReleased = 0;
+  for (const c of state.cities) {
+    if (c.owner === playerId) {
+      c.owner = null;
+      c.queue = [];
+      c.productionStock = 0;
+      c.contestedBy = null;
+      c.contestedSinceTurn = null;
+      citiesReleased++;
+    } else if (c.contestedBy === playerId) {
+      c.contestedBy = null;
+      c.contestedSinceTurn = null;
+    }
+  }
+  state.world.structures = state.world.structures.filter(s => s.owner !== playerId);
+  state.diplomacy = state.diplomacy.filter(t => t.a !== playerId && t.b !== playerId);
+  p.commander.unitId = null;
+  p.commander.respawnTurn = null;
+  log.push({ t: 'player_surrendered', playerId, citiesReleased, unitsDisbanded }, players);
+  log.push({ t: 'player_eliminated', playerId }, players);
+}

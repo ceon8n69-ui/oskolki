@@ -84,7 +84,8 @@ export class GameService extends EventEmitter {
 
   private async addPlayer(tx: Tx, matchId: string, userId: number | null, name: string, isBot: boolean, faction = 'union'): Promise<string> {
     if (!this.b.factions[faction]) throw new GameError('unknown_faction');
-    const { rows } = await tx.query('SELECT count(*)::int AS n FROM players WHERE match_id=$1', [matchId]);
+    // Место — следующее после последнего: после выхода игрока из лобби номера не повторяются.
+    const { rows } = await tx.query('SELECT coalesce(max(seat) + 1, 0)::int AS n FROM players WHERE match_id=$1', [matchId]);
     const seat = rows[0].n;
     const pid = `p${seat + 1}`;
     await tx.query(
@@ -98,8 +99,8 @@ export class GameService extends EventEmitter {
   async setFaction(matchId: string, userId: number, faction: string): Promise<MatchInfo> {
     if (!this.b.factions[faction]) throw new GameError('unknown_faction');
     await withTx(this.db, async tx => {
-      const { rows: [m] } = await tx.query('SELECT phase FROM matches WHERE id=$1 FOR UPDATE', [matchId]);
-      if (!m) throw new GameError('match_not_found', 404);
+      const { rows: [m] } = await tx.query('SELECT phase, deleted_at FROM matches WHERE id=$1 FOR UPDATE', [matchId]);
+      if (!m || m.deleted_at) throw new GameError('match_not_found', 404);
       if (m.phase !== 'lobby') throw new GameError('match_already_started', 409);
       const r = await tx.query('UPDATE players SET faction=$3 WHERE match_id=$1 AND user_id=$2', [matchId, userId, faction]);
       if (!r.rowCount) throw new GameError('not_in_match', 403);
@@ -111,7 +112,7 @@ export class GameService extends EventEmitter {
   async joinByInvite(userId: number, inviteCode: string, displayName: string, faction = 'union'): Promise<MatchInfo> {
     const matchId = await withTx(this.db, async tx => {
       const { rows: [m] } = await tx.query('SELECT * FROM matches WHERE invite_code=$1 FOR UPDATE', [inviteCode]);
-      if (!m) throw new GameError('invite_not_found', 404);
+      if (!m || m.deleted_at) throw new GameError('invite_not_found', 404);
       const { rows: existing } = await tx.query('SELECT id FROM players WHERE match_id=$1 AND user_id=$2', [m.id, userId]);
       if (existing.length) return m.id as string; // повторный переход по ссылке открывает ту же партию
       if (m.phase !== 'lobby') throw new GameError('match_already_started', 409);
@@ -129,8 +130,8 @@ export class GameService extends EventEmitter {
   /** Старт: генерация мира, начальное состояние, первый ход. */
   async startMatch(matchId: string, byUserId?: number): Promise<void> {
     // Мир зависит только от seed и пресета, поэтому строится заранее, в отдельном потоке и вне транзакции.
-    const { rows: [pre] } = await this.db.query('SELECT preset, seed, phase FROM matches WHERE id=$1', [matchId]);
-    if (!pre) throw new GameError('match_not_found', 404);
+    const { rows: [pre] } = await this.db.query('SELECT preset, seed, phase, deleted_at FROM matches WHERE id=$1', [matchId]);
+    if (!pre || pre.deleted_at) throw new GameError('match_not_found', 404);
     if (pre.phase !== 'lobby') return;
     const preMp = this.b.map.presets[this.b.turnPresets[pre.preset].mapPreset];
     const world = await generateWorldAsync({ ...preMp, seed: pre.seed });
@@ -138,7 +139,7 @@ export class GameService extends EventEmitter {
     let started: GameState | null = null;
     await withTx(this.db, async tx => {
       const { rows: [m] } = await tx.query('SELECT * FROM matches WHERE id=$1 FOR UPDATE', [matchId]);
-      if (!m) throw new GameError('match_not_found', 404);
+      if (!m || m.deleted_at) throw new GameError('match_not_found', 404); // удалена, пока строился мир
       if (m.phase !== 'lobby') return;
       if (byUserId !== undefined && m.created_by !== byUserId) throw new GameError('only_creator_can_start', 403);
       const { rows: pl } = await tx.query('SELECT * FROM players WHERE match_id=$1 ORDER BY seat', [matchId]);
@@ -175,14 +176,24 @@ export class GameService extends EventEmitter {
   async matchInfo(matchId: string, q: Db | Tx = this.db): Promise<MatchInfo> {
     const { rows: [m] } = await q.query('SELECT * FROM matches WHERE id=$1', [matchId]);
     if (!m) throw new GameError('match_not_found', 404);
-    const { rows: pl } = await q.query('SELECT id, name, ready, is_bot, faction, color, replaced_by_bot FROM players WHERE match_id=$1 ORDER BY seat', [matchId]);
+    const { rows: pl } = await q.query('SELECT id, name, ready, is_bot, faction, color, replaced_by_bot, eliminated, surrendered_turn FROM players WHERE match_id=$1 ORDER BY seat', [matchId]);
     return {
-      id: m.id, preset: m.preset, phase: m.phase, turn: m.turn, deadline: m.deadline ? new Date(m.deadline).toISOString() : null,
+      id: m.id, preset: m.preset, phase: m.deleted_at ? 'deleted' : m.phase, turn: m.turn, deadline: m.deadline ? new Date(m.deadline).toISOString() : null,
       maxPlayers: m.max_players, winner: m.winner, inviteCode: m.invite_code,
       winners: m.result?.winners ?? (m.winner ? [m.winner] : []),
       victory: m.mode?.victory, turnLimit: m.mode?.turnLimit ?? null, alliances: m.mode?.alliances ?? false,
-      players: pl.map(p => ({ id: p.id, name: p.name, ready: p.ready, isBot: p.is_bot, faction: p.faction, color: p.color, replacedByBot: p.replaced_by_bot })),
+      players: pl.map(p => ({ id: p.id, name: p.name, ready: p.ready, isBot: p.is_bot, faction: p.faction, color: p.color, replacedByBot: p.replaced_by_bot, eliminated: p.eliminated, surrendered: p.surrendered_turn !== null })),
     };
+  }
+
+  /** Сведения о партии с точки зрения пользователя: роль, сдача, архив. */
+  async matchInfoFor(matchId: string, userId: number, q: Db | Tx = this.db): Promise<MatchInfo> {
+    const info = await this.matchInfo(matchId, q);
+    const { rows: [r] } = await q.query(
+      `SELECT p.id, p.eliminated, p.surrendered_turn, m.created_by, EXISTS (SELECT 1 FROM match_hidden h WHERE h.user_id=$2 AND h.match_id=m.id) AS archived
+       FROM matches m JOIN players p ON p.match_id=m.id AND p.user_id=$2 WHERE m.id=$1`, [matchId, userId]);
+    if (r) info.me = { playerId: r.id, isCreator: Number(r.created_by) === userId, surrendered: r.surrendered_turn !== null, eliminated: r.eliminated, archived: r.archived };
+    return info;
   }
 
   async playerIdFor(matchId: string, userId: number): Promise<string> {
@@ -191,12 +202,107 @@ export class GameService extends EventEmitter {
     return rows[0].id;
   }
 
-  async listMatches(userId: number): Promise<MatchInfo[]> {
+  /** «Мои партии»: без удалённых комнат; архив — отдельно. */
+  async listMatches(userId: number, archived = false): Promise<MatchInfo[]> {
     const { rows } = await this.db.query(
-      'SELECT m.id FROM matches m JOIN players p ON p.match_id=m.id WHERE p.user_id=$1 ORDER BY m.updated_at DESC LIMIT 50',
+      `SELECT m.id FROM matches m JOIN players p ON p.match_id=m.id
+       WHERE p.user_id=$1 AND m.deleted_at IS NULL
+         AND ${archived ? '' : 'NOT '}EXISTS (SELECT 1 FROM match_hidden h WHERE h.user_id=$1 AND h.match_id=m.id)
+       ORDER BY m.updated_at DESC LIMIT 100`,
       [userId],
     );
-    return Promise.all(rows.map(r => this.matchInfo(r.id)));
+    return Promise.all(rows.map(r => this.matchInfoFor(r.id, userId)));
+  }
+
+  // ---------------- Комнаты: удаление, выход, сдача, архив ----------------
+
+  /** Удалить комнату ожидания (только создатель). Мягкое удаление: строки и журнал остаются. Повтор — без ошибки. */
+  async deleteRoom(matchId: string, userId: number): Promise<{ ok: true }> {
+    await withTx(this.db, async tx => {
+      // Та же блокировка строки, что у старта: удаление и запуск не пересекаются.
+      const { rows: [m] } = await tx.query('SELECT phase, created_by, deleted_at FROM matches WHERE id=$1 FOR UPDATE', [matchId]);
+      if (!m) throw new GameError('match_not_found', 404);
+      const { rows: me } = await tx.query('SELECT id FROM players WHERE match_id=$1 AND user_id=$2', [matchId, userId]);
+      if (!me.length && Number(m.created_by) !== userId) throw new GameError('not_in_match', 403);
+      if (Number(m.created_by) !== userId) throw new GameError('only_creator_can_delete', 403);
+      if (m.deleted_at) return;
+      if (m.phase !== 'lobby') throw new GameError('match_already_started', 409);
+      await tx.query('UPDATE matches SET deleted_at=now(), deleted_by=$2, updated_at=now() WHERE id=$1', [matchId, userId]);
+      await this.log(tx, matchId, `user:${userId}`, 'room_deleted', {});
+    });
+    this.emit('match_changed', matchId);
+    return { ok: true };
+  }
+
+  /** Покинуть комнату ожидания (участник, не создатель). Повтор — без ошибки. */
+  async leaveRoom(matchId: string, userId: number): Promise<{ ok: true }> {
+    await withTx(this.db, async tx => {
+      const { rows: [m] } = await tx.query('SELECT phase, created_by, deleted_at FROM matches WHERE id=$1 FOR UPDATE', [matchId]);
+      if (!m) throw new GameError('match_not_found', 404);
+      const { rows: me } = await tx.query('SELECT id FROM players WHERE match_id=$1 AND user_id=$2', [matchId, userId]);
+      if (!me.length) return; // уже вышел
+      if (Number(m.created_by) === userId) throw new GameError('creator_must_delete', 409);
+      if (m.deleted_at) return;
+      if (m.phase !== 'lobby') throw new GameError('match_already_started', 409);
+      await tx.query('DELETE FROM players WHERE match_id=$1 AND user_id=$2', [matchId, userId]);
+      await this.log(tx, matchId, `user:${userId}`, 'left_room', { player: me[0].id });
+    });
+    this.emit('match_changed', matchId);
+    return { ok: true };
+  }
+
+  /**
+   * Сдача в идущей партии. Сразу: игрок исключается из ожидания готовности, его приказы хода отменяются,
+   * новые приказы не принимаются. При расчёте хода сдача применяется первой (приказ «surrender» хранится
+   * в журнале, ход воспроизводим): отряды распускаются, города становятся нейтральными.
+   * Повтор — без ошибки и без повторного поражения.
+   */
+  async surrender(matchId: string, userId: number): Promise<{ ok: true; already: boolean }> {
+    let resolveNow = false;
+    const already = await withTx(this.db, async tx => {
+      // Без SKIP LOCKED: ждём, если ход сейчас считается, — сдача попадёт в следующий ход.
+      const { rows: [m] } = await tx.query('SELECT phase, turn, deleted_at FROM matches WHERE id=$1 FOR UPDATE', [matchId]);
+      if (!m || m.deleted_at) throw new GameError('match_not_found', 404);
+      const { rows: [p] } = await tx.query('SELECT id, eliminated, surrendered_turn FROM players WHERE match_id=$1 AND user_id=$2 FOR UPDATE', [matchId, userId]);
+      if (!p) throw new GameError('not_in_match', 403);
+      if (p.surrendered_turn !== null || p.eliminated || m.phase === 'finished') return true;
+      if (m.phase === 'lobby') throw new GameError('match_not_started', 409);
+      await tx.query(`UPDATE orders SET status='cancelled' WHERE match_id=$1 AND turn=$2 AND player_id=$3 AND status='active'`, [matchId, m.turn, p.id]);
+      await tx.query(
+        `INSERT INTO orders (id, match_id, turn, player_id, subject, version, payload, idempotency_key, status) VALUES ($1,$2,$3,$4,'surrender',1,$5,$6,'active')
+         ON CONFLICT DO NOTHING`,
+        [randomUUID(), matchId, m.turn, p.id, JSON.stringify({ kind: 'surrender' }), `surrender-${m.turn}`],
+      );
+      await tx.query('UPDATE players SET surrendered_turn=$3, ready=TRUE, is_bot=FALSE, replaced_by_bot=FALSE WHERE match_id=$1 AND id=$2', [matchId, p.id, m.turn]);
+      await this.log(tx, matchId, p.id, 'surrendered', { turn: m.turn });
+      // Если в партии не осталось противостоящих сторон — ход считается сразу, партия завершается.
+      const { rows: left } = await tx.query('SELECT id FROM players WHERE match_id=$1 AND NOT eliminated AND surrendered_turn IS NULL', [matchId]);
+      resolveNow = left.length <= 1;
+      return false;
+    });
+    this.emit('match_changed', matchId);
+    if (!already) {
+      this.emit('maybe_due', matchId);
+      if (resolveNow) await this.processTurn(matchId).catch(() => null);
+    }
+    return { ok: true, already };
+  }
+
+  /** Убрать партию из своего списка (только завершённую или после своего выбытия). */
+  async archive(matchId: string, userId: number, hidden: boolean): Promise<{ ok: true }> {
+    const { rows: [r] } = await this.db.query(
+      'SELECT m.phase, m.deleted_at, p.eliminated, p.surrendered_turn FROM matches m JOIN players p ON p.match_id=m.id AND p.user_id=$2 WHERE m.id=$1',
+      [matchId, userId],
+    );
+    if (!r) throw new GameError('not_in_match', 403);
+    if (hidden) {
+      const done = r.phase === 'finished' || r.deleted_at || r.eliminated || r.surrendered_turn !== null;
+      if (!done) throw new GameError('match_in_progress', 409);
+      await this.db.query('INSERT INTO match_hidden (user_id, match_id) VALUES ($1,$2) ON CONFLICT DO NOTHING', [userId, matchId]);
+    } else {
+      await this.db.query('DELETE FROM match_hidden WHERE user_id=$1 AND match_id=$2', [userId, matchId]);
+    }
+    return { ok: true };
   }
 
   async activeOrders(q: Db | Tx, matchId: string, turn: number, playerId?: string): Promise<(OrderRecord & { playerId: string })[]> {
@@ -208,7 +314,7 @@ export class GameService extends EventEmitter {
   }
 
   async getState(matchId: string, userId: number): Promise<StateResponse> {
-    const match = await this.matchInfo(matchId);
+    const match = await this.matchInfoFor(matchId, userId);
     if (match.phase === 'lobby') throw new GameError('match_not_started', 409);
     const playerId = await this.playerIdFor(matchId, userId);
     const state = await loadStateCached(this.db, matchId);
@@ -250,6 +356,9 @@ export class GameService extends EventEmitter {
       }
       if (m.phase !== 'planning') return { ok: false, reason: 'not_planning' };
       if (req.turn !== m.turn) return { ok: false, reason: 'turn_closed' };
+      const { rows: [pp] } = await tx.query('SELECT surrendered_turn, eliminated FROM players WHERE match_id=$1 AND id=$2', [matchId, playerId]);
+      if (pp.surrendered_turn !== null || pp.eliminated) return { ok: false, reason: 'surrendered' };
+      if (order.kind === 'surrender') return { ok: false, reason: 'use_surrender_endpoint' };
       const state = await loadStateCached(tx, matchId, m.turn);
       const subject = orderSubjectKey(order);
       const current = await this.activeOrders(tx, matchId, m.turn, playerId);
@@ -288,6 +397,8 @@ export class GameService extends EventEmitter {
     const res = await withTx(this.db, async tx => {
       const { rows: [m] } = await tx.query('SELECT phase, turn FROM matches WHERE id=$1 FOR SHARE', [matchId]);
       if (m.phase !== 'planning' || m.turn !== turn) return { ok: false, reason: 'turn_closed' };
+      const { rows: [pp] } = await tx.query('SELECT surrendered_turn, eliminated FROM players WHERE match_id=$1 AND id=$2', [matchId, playerId]);
+      if (pp.surrendered_turn !== null || pp.eliminated) return { ok: false, reason: 'surrendered' };
       await tx.query('UPDATE players SET ready=$3 WHERE match_id=$1 AND id=$2', [matchId, playerId, ready]);
       await this.reclaimFromBot(tx, matchId, playerId);
       return { ok: true };
@@ -307,7 +418,7 @@ export class GameService extends EventEmitter {
       SELECT m.id, m.turn FROM matches m
       WHERE m.phase = 'planning' AND (
         (m.deadline IS NOT NULL AND m.deadline <= now())
-        OR NOT EXISTS (SELECT 1 FROM players p WHERE p.match_id = m.id AND NOT p.is_bot AND NOT p.eliminated AND NOT p.ready)
+        OR NOT EXISTS (SELECT 1 FROM players p WHERE p.match_id = m.id AND NOT p.is_bot AND NOT p.eliminated AND p.surrendered_turn IS NULL AND NOT p.ready)
       )
       ORDER BY m.deadline NULLS FIRST LIMIT 20`);
     return rows;
@@ -414,10 +525,10 @@ export class GameService extends EventEmitter {
    */
   private async applyBotTakeover(tx: Tx, m: any, state: GameState, active: { playerId: string }[]): Promise<string[]> {
     const after = this.b.turnPresets[m.preset]?.botTakeoverAfter ?? null;
-    const { rows } = await tx.query('SELECT id, ready, missed_turns, is_bot, eliminated, user_id FROM players WHERE match_id=$1', [m.id]);
+    const { rows } = await tx.query('SELECT id, ready, missed_turns, is_bot, eliminated, user_id, surrendered_turn FROM players WHERE match_id=$1', [m.id]);
     const taken: string[] = [];
     for (const r of rows) {
-      if (r.is_bot || r.eliminated || r.user_id === null) continue;
+      if (r.is_bot || r.eliminated || r.user_id === null || r.surrendered_turn !== null) continue;
       const acted = r.ready || active.some(o => o.playerId === r.id);
       const missed = acted ? 0 : r.missed_turns + 1;
       if (after !== null && missed >= after) {
@@ -447,7 +558,7 @@ export class GameService extends EventEmitter {
     if (!Number.isInteger(count) || count < 1 || count > 31) throw new GameError('bad_count');
     const info = await withTx(this.db, async tx => {
       const { rows: [m] } = await tx.query('SELECT * FROM matches WHERE id=$1 FOR UPDATE', [matchId]);
-      if (!m) throw new GameError('match_not_found', 404);
+      if (!m || m.deleted_at) throw new GameError('match_not_found', 404);
       if (m.created_by !== userId) throw new GameError('only_creator', 403);
       if (m.phase !== 'lobby') throw new GameError('match_already_started', 409);
       const { rows: [{ n }] } = await tx.query('SELECT count(*)::int AS n FROM players WHERE match_id=$1', [matchId]);
@@ -539,6 +650,8 @@ export function sanitizeOrder(o: any): Order {
         ...(o.direction ? { direction: String(o.direction) } : {}),
         ...(o.target ? { target: coord(o.target) } : {}),
       };
+    case 'surrender':
+      return { kind: 'surrender' };
     default:
       throw new GameError('bad_order');
   }
