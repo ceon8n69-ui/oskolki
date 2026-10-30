@@ -82,7 +82,13 @@ export async function buildApp(deps: { cfg: ServerConfig; db: Db; game: GameServ
   }
 
   // ---------- партии ----------
-  app.get('/api/matches', async req => ({ matches: await game.listMatches(auth(req)) }));
+  app.get('/api/matches', async (req: FastifyRequest<{ Querystring: { archived?: string } }>) => ({ matches: await game.listMatches(auth(req), req.query.archived === '1') }));
+  // Комнаты: удаление (создатель, до старта), выход (участник, до старта), сдача (идущая партия), личный архив.
+  app.delete('/api/matches/:id', async (req: FastifyRequest<{ Params: { id: string } }>) => game.deleteRoom(req.params.id, auth(req)));
+  app.post('/api/matches/:id/leave', async (req: FastifyRequest<{ Params: { id: string } }>) => game.leaveRoom(req.params.id, auth(req)));
+  app.post('/api/matches/:id/surrender', async (req: FastifyRequest<{ Params: { id: string } }>) => game.surrender(req.params.id, auth(req)));
+  app.post('/api/matches/:id/archive', async (req: FastifyRequest<{ Params: { id: string } }>) => game.archive(req.params.id, auth(req), true));
+  app.delete('/api/matches/:id/archive', async (req: FastifyRequest<{ Params: { id: string } }>) => game.archive(req.params.id, auth(req), false));
 
   app.post('/api/matches', async (req: FastifyRequest<{ Body: { preset?: string; faction?: string; victory?: string; turnLimit?: number | null; alliances?: boolean } }>) => {
     const uid = auth(req);

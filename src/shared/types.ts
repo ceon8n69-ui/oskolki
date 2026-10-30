@@ -315,7 +315,12 @@ export interface DiplomacyOrder {
   status?: TreatyStatus; // для propose
 }
 
-export type Order = UnitOrder | RecruitOrder | ResearchOrder | ConstructOrder | SpecializeOrder | PromoteOrder | CommanderOrder | DiplomacyOrder;
+/** Сдача: принимается только сервером (POST /surrender), не через обычный приём приказов. */
+export interface SurrenderOrder {
+  kind: 'surrender';
+}
+
+export type Order = UnitOrder | RecruitOrder | ResearchOrder | ConstructOrder | SpecializeOrder | PromoteOrder | CommanderOrder | DiplomacyOrder | SurrenderOrder;
 
 export interface SubmittedOrder {
   id: string;
@@ -342,6 +347,8 @@ export function orderSubjectKey(o: Order): string {
       return o.action === 'ability' ? 'commander:ability' : 'commander:direction';
     case 'diplomacy':
       return `diplomacy:${o.target}`;
+    case 'surrender':
+      return 'surrender';
   }
 }
 
@@ -405,7 +412,8 @@ export type TurnEvent =
   | { t: 'ruins_looted'; at: Coord; playerId: PlayerId; unitId: UnitId; reward: string; amount: number }
   | { t: 'world_event'; eventId: string; phase: 'start' | 'end'; endTurn: number }
   | { t: 'momentum'; unitId: UnitId; owner: PlayerId }
-  | { t: 'plunder'; playerId: PlayerId; cityId: CityId; gold: number };
+  | { t: 'plunder'; playerId: PlayerId; cityId: CityId; gold: number }
+  | { t: 'player_surrendered'; playerId: PlayerId; citiesReleased: number; unitsDisbanded: number };
 
 /** Событие с видимостью: список игроков, которым его можно показать. */
 export interface StoredEvent {

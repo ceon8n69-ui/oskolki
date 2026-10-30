@@ -445,3 +445,105 @@ test('этап 5: архипелаг, новые народы, обелиск ч
   assert.equal(again.units.find(x => x.id === 'u9002')!.carriedBy, 'u9001');
   assert.equal(stateHash(again), stateHash(live));
 });
+
+test('комнаты: удаление создателем, выход участника, права, повторы и гонка удаления со стартом', async () => {
+  const t1 = await devLogin('Создатель');
+  const t2 = await devLogin('Гость');
+  const t3 = await devLogin('Чужой');
+  const m = (await call('POST', '/api/matches', t1, { preset: 'async', turnLimit: 20 })).json;
+  await call('POST', '/api/matches/join', t2, { inviteCode: m.inviteCode });
+  // Чужой не удалит, участник не удалит.
+  assert.equal((await call('DELETE', `/api/matches/${m.id}`, t3)).status, 403);
+  assert.equal((await call('DELETE', `/api/matches/${m.id}`, t2)).json.error, 'only_creator_can_delete');
+  // Участник выходит; повтор безопасен; создатель выйти не может — только удалить.
+  assert.equal((await call('POST', `/api/matches/${m.id}/leave`, t2)).json.ok, true);
+  assert.equal((await call('POST', `/api/matches/${m.id}/leave`, t2)).json.ok, true);
+  assert.equal((await call('POST', `/api/matches/${m.id}/leave`, t1)).json.error, 'creator_must_delete');
+  // После выхода номер места не повторяется.
+  await call('POST', '/api/matches/join', t2, { inviteCode: m.inviteCode });
+  const info = (await call('GET', `/api/matches/${m.id}`, t1)).json;
+  assert.equal(new Set(info.players.map((p: { id: string }) => p.id)).size, info.players.length);
+  // Удаление: повтор безопасен, комната исчезает у всех, по приглашению не войти, стартовать нельзя.
+  assert.equal((await call('DELETE', `/api/matches/${m.id}`, t1)).json.ok, true);
+  assert.equal((await call('DELETE', `/api/matches/${m.id}`, t1)).json.ok, true);
+  for (const t of [t1, t2]) assert.ok(!(await call('GET', '/api/matches', t)).json.matches.some((x: { id: string }) => x.id === m.id));
+  assert.equal((await call('POST', '/api/matches/join', t3, { inviteCode: m.inviteCode })).status, 404);
+  assert.equal((await call('POST', `/api/matches/${m.id}/start`, t1)).status, 404);
+  const { rows: [row] } = await db.query('SELECT deleted_at, (SELECT count(*)::int FROM players WHERE match_id=$1) AS n FROM matches WHERE id=$1', [m.id]);
+  assert.ok(row.deleted_at && row.n >= 1, 'мягкое удаление: строки сохранены');
+
+  // Гонка: старт и удаление одновременно — побеждает ровно одна операция.
+  const r = (await call('POST', '/api/matches', t1, { preset: 'async', turnLimit: 20 })).json;
+  await call('POST', `/api/matches/${r.id}/bots`, t1, { count: 1 });
+  const [st, del] = await Promise.all([call('POST', `/api/matches/${r.id}/start`, t1), call('DELETE', `/api/matches/${r.id}`, t1)]);
+  const { rows: [after] } = await db.query('SELECT phase, deleted_at FROM matches WHERE id=$1', [r.id]);
+  if (after.deleted_at) {
+    assert.equal(after.phase, 'lobby');
+    assert.equal(del.json.ok, true);
+    assert.equal(st.status, 404);
+  } else {
+    assert.equal(after.phase, 'planning');
+    assert.equal(del.json.error, 'match_already_started');
+  }
+  // Активную партию создатель удалить не может.
+  const a = (await call('POST', '/api/matches', t1, { preset: 'vsbot' })).json;
+  assert.equal((await call('DELETE', `/api/matches/${a.id}`, t1)).json.error, 'match_already_started');
+});
+
+test('сдача: повторы безопасны, приказы отменены, ход идёт дальше без сдавшегося, архив только для себя', async () => {
+  const t1 = await devLogin('Ира');
+  const t2 = await devLogin('Олег');
+  const m = (await call('POST', '/api/matches', t1, { preset: 'async', turnLimit: 20 })).json;
+  await call('POST', '/api/matches/join', t2, { inviteCode: m.inviteCode });
+  await call('POST', `/api/matches/${m.id}/bots`, t1, { count: 1 });
+  await call('POST', `/api/matches/${m.id}/start`, t1);
+  const s2 = (await call<StateResponse>('GET', `/api/matches/${m.id}/state`, t2)).json;
+  const p2 = s2.view.me.id;
+  const u2 = s2.view.units.find(u => u.owner === p2)!;
+  await call('POST', `/api/matches/${m.id}/orders`, t2, { turn: 1, order: { kind: 'unit', unitId: u2.id, mode: 'hold', path: [] }, idempotencyKey: randomUUID() });
+  // Архивировать идущую партию нельзя.
+  assert.equal((await call('POST', `/api/matches/${m.id}/archive`, t2)).json.error, 'match_in_progress');
+  // Две сдачи одновременно (плохая связь) — одно поражение.
+  const [a, b2] = await Promise.all([call('POST', `/api/matches/${m.id}/surrender`, t2), call('POST', `/api/matches/${m.id}/surrender`, t2)]);
+  assert.deepEqual([a.json.already, b2.json.already].sort(), [false, true]);
+  const { rows: ords } = await db.query(`SELECT subject, status FROM orders WHERE match_id=$1 AND player_id=$2 ORDER BY subject`, [m.id, p2]);
+  assert.deepEqual(ords.map(o => `${o.subject}:${o.status}`), ['surrender:active', `unit:${u2.id}:cancelled`]);
+  // Сдавшийся больше не командует и не мешает готовности.
+  const rej = await call('POST', `/api/matches/${m.id}/orders`, t2, { turn: 1, order: { kind: 'unit', unitId: u2.id, mode: 'hold', path: [] }, idempotencyKey: randomUUID() });
+  assert.equal(rej.json.reason, 'surrendered');
+  assert.equal((await call('POST', `/api/matches/${m.id}/orders`, t1, { turn: 1, order: { kind: 'surrender' }, idempotencyKey: randomUUID() })).json.reason, 'use_surrender_endpoint');
+  await call('POST', `/api/matches/${m.id}/ready`, t1, { turn: 1, ready: true });
+  assert.ok((await game.dueMatches()).some(x => x.id === m.id), 'ход готов к расчёту без сдавшегося');
+  assert.ok(await game.processTurn(m.id, 1));
+  await assertReplayable(m.id, 1);
+  const st = await loadState(db, m.id);
+  assert.equal(st.players.find(p => p.id === p2)!.eliminated, true);
+  assert.equal(st.units.filter(u => u.owner === p2).length, 0);
+  assert.equal(st.cities.filter(c => c.owner === p2).length, 0);
+  const info = (await call('GET', `/api/matches/${m.id}`, t1)).json;
+  assert.equal(info.phase, 'planning', 'остальные продолжают');
+  assert.equal(info.players.find((p: { id: string }) => p.id === p2).surrendered, true);
+  // Повторная сдача после расчёта — без изменений.
+  assert.equal((await call('POST', `/api/matches/${m.id}/surrender`, t2)).json.already, true);
+  // Архив: только для себя, можно вернуть.
+  assert.equal((await call('POST', `/api/matches/${m.id}/archive`, t2)).json.ok, true);
+  assert.ok(!(await call('GET', '/api/matches', t2)).json.matches.some((x: { id: string }) => x.id === m.id));
+  assert.ok((await call('GET', '/api/matches?archived=1', t2)).json.matches.some((x: { id: string }) => x.id === m.id));
+  assert.ok((await call('GET', '/api/matches', t1)).json.matches.some((x: { id: string }) => x.id === m.id), 'у других партия осталась');
+  assert.equal((await call('DELETE', `/api/matches/${m.id}/archive`, t2)).json.ok, true);
+  const mine = (await call('GET', '/api/matches', t2)).json.matches.find((x: { id: string }) => x.id === m.id);
+  assert.equal(mine.me.surrendered, true);
+  assert.equal(mine.me.archived, false);
+});
+
+test('сдача в партии один на один завершает её сразу', async () => {
+  const t1 = await devLogin('Тимур');
+  const m = (await call('POST', '/api/matches', t1, { preset: 'vsbot' })).json;
+  const r = await call('POST', `/api/matches/${m.id}/surrender`, t1);
+  assert.equal(r.json.ok, true);
+  const info = (await call('GET', `/api/matches/${m.id}`, t1)).json;
+  assert.equal(info.phase, 'finished');
+  assert.equal(info.winners.length, 1);
+  assert.notEqual(info.winners[0], info.players.find((p: { name: string }) => p.name === 'Тимур').id);
+  assert.equal((await call('POST', `/api/matches/${m.id}/archive`, t1)).json.ok, true);
+});

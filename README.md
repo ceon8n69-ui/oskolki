@@ -88,6 +88,11 @@ test/                    тесты правил, генератора и сер
 | GET | `/api/matches/:id/minimap` | исследованная местность, города, видимые отряды |
 | POST/DELETE | `/api/matches/:id/orders` | приказ `{turn, order, idempotencyKey, baseVersion?}` / отмена. Отряды: `move` (+`longRoute`, `stopOnThreat`), `attack` (+`ability: knockback`), `hold`, `build` (`road`, `fort`, `forest`); города: `recruit`, `construct`, `specialize`; `research`, `promote`, `commander` (`ability` / `direction`), `diplomacy` (`propose` / `accept` / `decline` / `break`) |
 | POST | `/api/matches/:id/ready` | готовность |
+| GET | `/api/matches?archived=1` | мои партии / личный архив (удалённые комнаты не показываются) |
+| DELETE | `/api/matches/:id` | удалить комнату ожидания (только создатель, до старта; мягкое удаление) |
+| POST | `/api/matches/:id/leave` | покинуть комнату ожидания (участник) |
+| POST | `/api/matches/:id/surrender` | сдаться в идущей партии (повтор безопасен) |
+| POST / DELETE | `/api/matches/:id/archive` | убрать завершённую партию из своего списка / вернуть |
 | GET/POST | `/api/matches/:id/preview/moves`, `/preview/attack` | подсветка и прогноз боя |
 | WS | `/ws?token=…` | `subscribe` → `turn_resolved`, `match`, `ready_changed` |
 

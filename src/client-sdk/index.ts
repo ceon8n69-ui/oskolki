@@ -80,10 +80,26 @@ export class OskolkiClient {
   }
 
   // ---------- лобби ----------
-  listMatches() {
-    return this.request<{ matches: MatchInfo[] }>('GET', '/api/matches').then(r => r.matches);
+  listMatches(archived = false) {
+    return this.request<{ matches: MatchInfo[] }>('GET', `/api/matches${archived ? '?archived=1' : ''}`).then(r => r.matches);
   }
-  createMatch(preset: 'quick' | 'async' | 'vsbot' | 'campaign', faction = 'union', options: { victory?: string; turnLimit?: number | null; alliances?: boolean } = {}) {
+  /** Удалить комнату ожидания (создатель). */
+  deleteRoom(matchId: string) {
+    return this.request<{ ok: true }>('DELETE', `/api/matches/${matchId}`);
+  }
+  /** Покинуть комнату ожидания (участник). */
+  leaveRoom(matchId: string) {
+    return this.request<{ ok: true }>('POST', `/api/matches/${matchId}/leave`);
+  }
+  /** Сдаться в идущей партии. Повтор безопасен. */
+  surrender(matchId: string) {
+    return this.request<{ ok: true; already: boolean }>('POST', `/api/matches/${matchId}/surrender`);
+  }
+  /** Убрать партию из своего списка (true) или вернуть из архива (false). */
+  archive(matchId: string, hidden = true) {
+    return this.request<{ ok: true }>(hidden ? 'POST' : 'DELETE', `/api/matches/${matchId}/archive`);
+  }
+  createMatch(preset: string, faction = 'union', options: { victory?: string; turnLimit?: number | null; alliances?: boolean } = {}) {
     return this.request<MatchInfo>('POST', '/api/matches', { preset, faction, ...options });
   }
   addBots(matchId: string, count: number) {
