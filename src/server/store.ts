@@ -103,13 +103,12 @@ export async function loadState(q: Q, matchId: string): Promise<GameState> {
   const { rows: [m] } = await q.query('SELECT * FROM matches WHERE id=$1', [matchId]);
   if (!m) throw new Error('match_not_found');
   const map = await loadMap(q, matchId, m);
-  const [pl, rs, us, cs, vs] = await Promise.all([
-    q.query('SELECT * FROM players WHERE match_id=$1 ORDER BY seat', [matchId]),
-    q.query('SELECT player_id, tech_id FROM research WHERE match_id=$1 ORDER BY completed_turn, tech_id', [matchId]),
-    q.query('SELECT * FROM units WHERE match_id=$1 ORDER BY id', [matchId]),
-    q.query('SELECT * FROM cities WHERE match_id=$1 ORDER BY id', [matchId]),
-    q.query('SELECT * FROM visibility WHERE match_id=$1', [matchId]),
-  ]);
+  // Запросы последовательно: внутри транзакции у одного соединения не может быть параллельных запросов.
+  const pl = await q.query('SELECT * FROM players WHERE match_id=$1 ORDER BY seat', [matchId]);
+  const rs = await q.query('SELECT player_id, tech_id FROM research WHERE match_id=$1 ORDER BY completed_turn, tech_id', [matchId]);
+  const us = await q.query('SELECT * FROM units WHERE match_id=$1 ORDER BY id', [matchId]);
+  const cs = await q.query('SELECT * FROM cities WHERE match_id=$1 ORDER BY id', [matchId]);
+  const vs = await q.query('SELECT * FROM visibility WHERE match_id=$1', [matchId]);
   const players: PlayerState[] = pl.rows.map(r => ({
     id: r.id, name: r.name, faction: r.faction, color: r.color, gold: r.gold, knowledge: r.knowledge,
     researched: rs.rows.filter(x => x.player_id === r.id).map(x => x.tech_id),
