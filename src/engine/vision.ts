@@ -1,0 +1,89 @@
+import type { Balance } from '../shared/balance.ts';
+import { terrainRule } from '../shared/balance.ts';
+import type { GameState, PlayerId, UnitState } from '../shared/types.ts';
+import { NEUTRAL } from '../shared/types.ts';
+import { idx, inBounds, terrainAt } from './grid.ts';
+
+export interface Vision {
+  /** 1 — клетка видна сейчас. */
+  visible: Uint8Array;
+  /** 1 — рядом (≤1) есть наблюдатель: видит отряды в лесу. */
+  close: Uint8Array;
+}
+
+function stamp(state: GameState, grid: Uint8Array, cx: number, cy: number, r: number): void {
+  const map = state.map;
+  for (let y = cy - r; y <= cy + r; y++) {
+    for (let x = cx - r; x <= cx + r; x++) {
+      if (inBounds(map, x, y)) grid[idx(map, x, y)] = 1;
+    }
+  }
+}
+
+export function computeVision(b: Balance, state: GameState, playerId: PlayerId): Vision {
+  const n = state.map.width * state.map.height;
+  const visible = new Uint8Array(n);
+  const close = new Uint8Array(n);
+  for (const u of state.units) {
+    if (u.owner !== playerId || u.hp <= 0) continue;
+    const bonus = terrainRule(b, terrainAt(state.map, u.x, u.y)).visionBonus;
+    stamp(state, visible, u.x, u.y, b.units[u.type].vision + bonus);
+    stamp(state, close, u.x, u.y, 1);
+  }
+  for (const c of state.cities) {
+    if (c.owner !== playerId) continue;
+    stamp(state, visible, c.x, c.y, b.cities.visionRadius);
+    stamp(state, close, c.x, c.y, 1);
+  }
+  return { visible, close };
+}
+
+export function computeAllVision(b: Balance, state: GameState): Map<PlayerId, Vision> {
+  const out = new Map<PlayerId, Vision>();
+  for (const p of state.players) out.set(p.id, computeVision(b, state, p.id));
+  return out;
+}
+
+/** Видит ли игрок отряд, стоящий на клетке (x,y). Свои отряды видны всегда. */
+export function canSeeUnitAt(b: Balance, state: GameState, v: Vision, x: number, y: number): boolean {
+  const i = idx(state.map, x, y);
+  if (!v.visible[i]) return false;
+  if (terrainRule(b, terrainAt(state.map, x, y)).hidesUnits && !v.close[i]) return false;
+  return true;
+}
+
+export function canSeeUnit(b: Balance, state: GameState, viewer: PlayerId, v: Vision, u: UnitState): boolean {
+  if (u.owner === viewer) return true;
+  return canSeeUnitAt(b, state, v, u.x, u.y);
+}
+
+/** Отметить видимые клетки как исследованные и обновить разведданные. */
+export function updateExploredAndIntel(b: Balance, state: GameState, vision: Map<PlayerId, Vision>): void {
+  for (const p of state.players) {
+    const v = vision.get(p.id)!;
+    let ex = state.explored[p.id];
+    if (!ex) ex = state.explored[p.id] = new Uint8Array(state.map.width * state.map.height);
+    for (let i = 0; i < ex.length; i++) if (v.visible[i]) ex[i] = 1;
+
+    const intel = (state.intel[p.id] ??= { units: {}, cities: {} });
+    // Убираем устаревшие отметки там, где клетка видна сейчас (отряда там уже может не быть).
+    for (const [id, su] of Object.entries(intel.units)) {
+      if (v.visible[idx(state.map, su.x, su.y)] && canSeeUnitAt(b, state, v, su.x, su.y)) delete intel.units[id];
+    }
+    for (const u of state.units) {
+      if (u.owner === p.id || u.hp <= 0) continue;
+      if (canSeeUnit(b, state, p.id, v, u)) {
+        intel.units[u.id] = { id: u.id, owner: u.owner, type: u.type, x: u.x, y: u.y, hp: u.hp, seenTurn: state.turn };
+      }
+    }
+    for (const c of state.cities) {
+      if (v.visible[idx(state.map, c.x, c.y)]) {
+        intel.cities[c.id] = { owner: c.owner, level: c.level, contestedBy: c.contestedBy, seenTurn: state.turn };
+      }
+    }
+  }
+}
+
+export function isNeutral(owner: PlayerId | null): boolean {
+  return owner === null || owner === NEUTRAL;
+}
