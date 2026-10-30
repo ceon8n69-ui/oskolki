@@ -12,8 +12,11 @@ input { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid #455;
 canvas#map { position: fixed; inset: 0; width: 100%; height: 100%; display: block; touch-action: none; }
 .top, .bottom { position: fixed; left: 0; right: 0; background: var(--panel); padding: 6px 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; z-index: 2; }
 .top { top: 0; padding-top: max(6px, env(safe-area-inset-top)); }
-.bottom { bottom: 0; padding-bottom: max(6px, env(safe-area-inset-bottom)); }
-.sheet { position: fixed; left: 8px; right: 8px; bottom: 64px; background: var(--panel); border-radius: 12px; padding: 10px; z-index: 3; max-height: 45vh; overflow: auto; touch-action: pan-y; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
+.bottom { bottom: 0; padding-bottom: max(6px, env(safe-area-inset-bottom)); flex-wrap: nowrap; overflow-x: auto; touch-action: pan-x; scrollbar-width: none; }
+.bottom::-webkit-scrollbar { display: none; }
+.bottom button { flex-shrink: 0; }
+.bottom button.primary { position: sticky; right: 0; box-shadow: -8px 0 12px var(--bg); }
+.sheet { position: fixed; left: 8px; right: 8px; bottom: calc(var(--bottom-h, 64px) + 6px); background: var(--panel); border-radius: 12px; padding: 10px; z-index: 3; max-height: 45vh; overflow: auto; touch-action: pan-y; overscroll-behavior: contain; -webkit-overflow-scrolling: touch; }
 .sheet h3 { margin: 0 0 6px; font-size: 15px; }
 .toast { position: fixed; top: 56px; left: 50%; transform: translateX(-50%); background: #000c; padding: 8px 14px; border-radius: 8px; z-index: 5; pointer-events: none; transition: opacity .3s; }
 .pill { padding: 2px 8px; border-radius: 99px; background: #3a4651; }

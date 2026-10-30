@@ -1,6 +1,5 @@
-import { loadLiveArt, drawLiveArt } from './live-art.ts';
-// Отладочный клиент этапа 1. Вид сверху, условные цвета — только для проверки правил, сети и шкалы событий.
-// Финальная изометрическая графика заменяет функции draw*/screenToTile, используя тот же OskolkiClient.
+import { loadLiveArt, drawLiveArtIso } from './live-art.ts';
+// Клиент: 2.5D-изометрия на Canvas 2D (рельеф с высотой, спрайты из web/art), без расчёта правил — только данные сервера.
 import { BALANCE } from '../../src/shared/balance.ts';
 import type { StateResponse, ViewUnit } from '../../src/shared/protocol.ts';
 import type { Coord, MapData, StoredEvent } from '../../src/shared/types.ts';
@@ -53,7 +52,7 @@ async function boot() {
   tg?.disableVerticalSwipes?.();
   // Старые клиенты Telegram: гасим протягивание страницы вне прокручиваемых панелей.
   document.addEventListener('touchmove', e => {
-    if (!(e.target as HTMLElement).closest?.('.sheet, .screen')) e.preventDefault();
+    if (!(e.target as HTMLElement).closest?.('.sheet, .screen, .bottom')) e.preventDefault();
   }, { passive: false });
   try {
     if (tg?.initData) await client.loginTelegram(tg.initData);
@@ -185,7 +184,7 @@ async function openMatch(id: string) {
 
 // ===================== игровой экран =====================
 
-let cam = { x: 16, y: 16, size: 48 };
+let cam = { x: 16, y: 16, size: 72 };
 let selected: string | null = null;
 let moveTiles: { x: number; y: number; cost: number; embark?: boolean; disembark?: boolean }[] = [];
 let sheet: 'none' | 'city' | 'research' | 'log' | 'commander' | 'diplomacy' = 'none';
@@ -330,6 +329,9 @@ function renderHud(withSheet = true) {
   if (sp) sp.onclick = () => (player!.setSpeed(player!.speed === 1 ? 2 : 1), renderHud());
   const sk = document.getElementById('sk');
   if (sk) sk.onclick = () => player!.skip();
+  const mini = document.getElementById('mini');
+  if (mini) mini.style.top = `${(document.getElementById('top')?.offsetHeight ?? 44) + 6}px`;
+  document.documentElement.style.setProperty('--bottom-h', `${document.querySelector<HTMLElement>('.bottom')?.offsetHeight ?? 58}px`);
   if (withSheet) renderSheet();
 }
 
@@ -508,10 +510,9 @@ async function submit(p: Promise<any>) {
 function visibleChunkList(): [number, number][] {
   const st = client.state!;
   const cs = st.view.map.chunkSize;
-  const half = { x: innerWidth / cam.size / 2 + 2, y: innerHeight / cam.size / 2 + 2 };
+  const { x0, x1, y0, y1 } = visibleBox();
   const out: [number, number][] = [];
-  for (let cy = Math.max(0, Math.floor((cam.y - half.y) / cs)); cy <= Math.min(st.view.map.height / cs - 1, Math.floor((cam.y + half.y) / cs)); cy++)
-    for (let cx = Math.max(0, Math.floor((cam.x - half.x) / cs)); cx <= Math.min(st.view.map.width / cs - 1, Math.floor((cam.x + half.x) / cs)); cx++) out.push([cx, cy]);
+  for (let cy = Math.floor(y0 / cs); cy <= Math.floor(y1 / cs); cy++) for (let cx = Math.floor(x0 / cs); cx <= Math.floor(x1 / cs); cx++) out.push([cx, cy]);
   return out;
 }
 let chunkLoading = false;
@@ -525,8 +526,6 @@ async function loadVisibleChunks() {
   }
 }
 
-const tileToScreen = (x: number, y: number) => ({ sx: innerWidth / 2 + (x - cam.x) * cam.size, sy: innerHeight / 2 + (y - cam.y) * cam.size });
-const screenToTile = (sx: number, sy: number) => ({ x: Math.floor(cam.x + (sx - innerWidth / 2) / cam.size + 0.5), y: Math.floor(cam.y + (sy - innerHeight / 2) / cam.size + 0.5) });
 
 function localMap(): MapData {
   const st = client.state!;
@@ -591,77 +590,273 @@ function displayUnits(now: number): { units: (ViewUnit & { dx?: number; dy?: num
   return { units: [...units.values()], floats };
 }
 
+// ---------- 2.5D: изометрическая проекция ----------
+// Ромб клетки: ширина cam.size, высота cam.size/2. Высота рельефа поднимает верхнюю грань.
+const ELEV: Record<number, number> = { 0: -0.12, 1: -0.06, 2: 0, 3: 0.04, 4: 0.32, 5: 0.6, 255: 0 };
+const elevPx = () => cam.size * 0.42;
+function tileElev(x: number, y: number): number {
+  const t = client.tile(Math.round(x), Math.round(y));
+  return t ? ELEV[t.terrain] ?? 0 : 0;
+}
+function project(x: number, y: number, z: number) {
+  const S = cam.size;
+  return { sx: innerWidth / 2 + (x - y - (cam.x - cam.y)) * S / 2, sy: innerHeight / 2 + (x + y - (cam.x + cam.y)) * S / 4 - z * elevPx() };
+}
+/** Центр верхней грани клетки (дробные координаты — для движения в анимации). */
+const tileToScreen = (x: number, y: number) => project(x, y, tileElev(x, y));
+function groundAt(sx: number, sy: number) {
+  const S = cam.size;
+  const a = (sx - innerWidth / 2) / (S / 2), b = (sy - innerHeight / 2) / (S / 4);
+  return { x: (a + b) / 2 + cam.x, y: (b - a) / 2 + cam.y };
+}
+/** Клетка под пальцем с учётом высоты: выбирается самая передняя, чья верхняя грань содержит точку. */
+const screenToTile = (sx: number, sy: number) => {
+  const g = groundAt(sx, sy);
+  const S = cam.size;
+  let best: { x: number; y: number } | null = null;
+  for (let y = Math.round(g.y) - 1; y <= Math.round(g.y) + 3; y++) for (let x = Math.round(g.x) - 1; x <= Math.round(g.x) + 3; x++) {
+    const p = tileToScreen(x, y);
+    if (Math.abs(sx - p.sx) / (S / 2) + Math.abs(sy - p.sy) / (S / 4) > 1) continue;
+    if (!best || x + y > best.x + best.y) best = { x, y };
+  }
+  return best ?? { x: Math.round(g.x), y: Math.round(g.y) };
+};
+/** Касание: сначала фигуры отрядов (они выше своей клетки), затем клетка под пальцем. */
+function pickTile(sx: number, sy: number) {
+  const st = client.state!;
+  const S = cam.size;
+  const hit = st.view.units
+    .filter(u => !u.carriedBy)
+    .filter(u => {
+      const p = tileToScreen(u.x, u.y);
+      return Math.abs(sx - p.sx) <= S * 0.28 && sy <= p.sy + S * 0.12 && sy >= p.sy - S * 0.85;
+    })
+    .sort((a, b) => b.x + b.y - (a.x + a.y))[0];
+  return hit ? { x: hit.x, y: hit.y } : screenToTile(sx, sy);
+}
+/** Прямоугольник клеток, покрывающий экран (с запасом на высоту). */
+function visibleBox() {
+  const st = client.state!;
+  const pad = 2;
+  const corners = [groundAt(0, -cam.size), groundAt(innerWidth, -cam.size), groundAt(0, innerHeight + cam.size), groundAt(innerWidth, innerHeight + cam.size)];
+  return {
+    x0: Math.max(0, Math.floor(Math.min(...corners.map(c => c.x))) - pad), x1: Math.min(st.view.map.width - 1, Math.ceil(Math.max(...corners.map(c => c.x))) + pad),
+    y0: Math.max(0, Math.floor(Math.min(...corners.map(c => c.y))) - pad), y1: Math.min(st.view.map.height - 1, Math.ceil(Math.max(...corners.map(c => c.y))) + pad),
+  };
+}
+/** Сдвиг камеры по движению пальца на экране. */
+function panBy(cx: number, cy: number, dxPx: number, dyPx: number) {
+  const S = cam.size;
+  const a = dxPx / (S / 2), b = dyPx / (S / 4);
+  cam.x = cx - (a + b) / 2;
+  cam.y = cy - (b - a) / 2;
+}
+
+const RGB: Record<number, [number, number, number]> = { 0: [38, 92, 140], 1: [62, 128, 168], 2: [132, 172, 96], 3: [78, 128, 70], 4: [168, 150, 98], 5: [128, 128, 136], 255: [16, 19, 23] };
+const shade = (c: [number, number, number], k: number) => `rgb(${Math.round(c[0] * k)},${Math.round(c[1] * k)},${Math.round(c[2] * k)})`;
+const jitter = (x: number, y: number) => (((x * 73856093) ^ (y * 19349663)) >>> 0) % 1000 / 1000;
+
+function diamond(sx: number, sy: number, S: number, shrink = 1) {
+  ctx.beginPath();
+  ctx.moveTo(sx, sy - S / 4 * shrink);
+  ctx.lineTo(sx + S / 2 * shrink, sy);
+  ctx.lineTo(sx, sy + S / 4 * shrink);
+  ctx.lineTo(sx - S / 2 * shrink, sy);
+  ctx.closePath();
+}
+
+function drawTile(x: number, y: number, t: ReturnType<typeof client.tile>, overlay: string | null) {
+  const S = cam.size;
+  const terr = t?.terrain ?? 255;
+  const z = ELEV[terr] ?? 0;
+  const { sx, sy } = project(x, y, z);
+  if (sx < -S || sx > innerWidth + S || sy < -S * 2 || sy > innerHeight + S * 2) return;
+  if (terr === 255) return; // неразведанное — пустота
+  const base = RGB[terr] ?? RGB[255];
+  const k = 0.93 + jitter(x, y) * 0.12;
+  // Боковые грани: от верха до уровня глубокой воды.
+  const depth = (z - ELEV[0]) * elevPx() + (terr === 255 ? 0 : S * 0.06);
+  if (S >= 18 && depth > 1) {
+    ctx.fillStyle = shade(base, 0.62 * k);
+    ctx.beginPath();
+    ctx.moveTo(sx - S / 2, sy); ctx.lineTo(sx, sy + S / 4); ctx.lineTo(sx, sy + S / 4 + depth); ctx.lineTo(sx - S / 2, sy + depth); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = shade(base, 0.48 * k);
+    ctx.beginPath();
+    ctx.moveTo(sx + S / 2, sy); ctx.lineTo(sx, sy + S / 4); ctx.lineTo(sx, sy + S / 4 + depth); ctx.lineTo(sx + S / 2, sy + depth); ctx.closePath(); ctx.fill();
+  }
+  diamond(sx, sy, S, 1.01);
+  ctx.fillStyle = shade(base, k);
+  ctx.fill();
+  if (terr <= 1 && S >= 24) {
+    // блики воды
+    ctx.strokeStyle = '#ffffff22';
+    ctx.lineWidth = 1;
+    const o = (jitter(y, x) - 0.5) * S * 0.3;
+    ctx.beginPath(); ctx.moveTo(sx - S * 0.18 + o, sy); ctx.lineTo(sx + S * 0.05 + o, sy); ctx.stroke();
+  }
+  if (!t || terr === 255) return;
+  // Дороги — к соседям с дорогой.
+  if (t.features & 1 && S >= 16) {
+    ctx.strokeStyle = '#c9b48a';
+    ctx.lineWidth = Math.max(2, S * 0.07);
+    ctx.lineCap = 'round';
+    for (const [dx, dy] of [[1, 0], [0, 1], [-1, 0], [0, -1], [1, 1], [-1, -1], [1, -1], [-1, 1]]) {
+      const n = client.tile(x + dx, y + dy);
+      if (!n || !(n.features & 3)) continue;
+      const p = project(x + dx * 0.5, y + dy * 0.5, z);
+      ctx.beginPath(); ctx.moveTo(sx, sy); ctx.lineTo(p.sx, p.sy); ctx.stroke();
+    }
+  }
+  if (overlay) {
+    diamond(sx, sy, S, 0.92);
+    ctx.fillStyle = overlay;
+    ctx.fill();
+  }
+  if (!t.visible) {
+    diamond(sx, sy, S, 1.01);
+    ctx.fillStyle = '#0b0f1488';
+    ctx.fill();
+  }
+  if (S >= 22) {
+    ctx.strokeStyle = '#00000018';
+    ctx.lineWidth = 1;
+    diamond(sx, sy, S);
+    ctx.stroke();
+  }
+}
+
+/** Объекты на клетке: лес, горы, мосты, укрепления, руины, ресурсы — рисуются в порядке глубины. */
+function drawTileProps(x: number, y: number, t: NonNullable<ReturnType<typeof client.tile>>) {
+  const S = cam.size;
+  const { sx, sy } = tileToScreen(x, y);
+  const fade = t.visible ? 1 : 0.55;
+  ctx.save();
+  ctx.globalAlpha = fade;
+  if (t.features & 2) {
+    if (!drawLiveArtIso(ctx, 'bridge', sx, sy + S * 0.18, S)) { ctx.fillStyle = '#8a6a3e'; ctx.fillRect(sx - S * 0.3, sy - S * 0.06, S * 0.6, S * 0.12); }
+  } else if (t.terrain === 3) {
+    if (!drawLiveArtIso(ctx, 'tree', sx, sy + S * 0.1, S, 1, 0.85 + jitter(x, y) * 0.2)) {
+      for (const [ox, oy] of [[-0.14, 0.02], [0.12, -0.02], [0, 0.08]]) {
+        const bx = sx + ox * S, by = sy + oy * S;
+        ctx.fillStyle = '#2e5e34';
+        ctx.beginPath(); ctx.moveTo(bx, by - S * 0.36); ctx.lineTo(bx + S * 0.09, by); ctx.lineTo(bx - S * 0.09, by); ctx.closePath(); ctx.fill();
+      }
+    }
+  } else if (t.terrain === 5) {
+    if (!drawLiveArtIso(ctx, 'mountain', sx, sy + S * 0.16, S)) {
+      ctx.fillStyle = '#9a9aa4';
+      ctx.beginPath(); ctx.moveTo(sx, sy - S * 0.55); ctx.lineTo(sx + S * 0.32, sy + S * 0.1); ctx.lineTo(sx - S * 0.32, sy + S * 0.1); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#eee';
+      ctx.beginPath(); ctx.moveTo(sx, sy - S * 0.55); ctx.lineTo(sx + S * 0.09, sy - S * 0.37); ctx.lineTo(sx - S * 0.09, sy - S * 0.37); ctx.closePath(); ctx.fill();
+    }
+  }
+  if (t.features & 128 && S >= 14) {
+    // укрепление: частокол по краю ромба
+    ctx.strokeStyle = '#6b4a2b';
+    ctx.lineWidth = Math.max(2, S * 0.05);
+    diamond(sx, sy - S * 0.04, S, 0.78);
+    ctx.stroke();
+  }
+  if (S >= 18) {
+    const mark = (color: string, ox: number) => {
+      ctx.fillStyle = color;
+      ctx.beginPath(); ctx.arc(sx + ox * S, sy + S * 0.08, Math.max(2, S * 0.05), 0, Math.PI * 2); ctx.fill();
+    };
+    if (t.features & 4) {
+      const looted = client.state!.view.lootedRuins.includes(y * client.state!.view.map.width + x);
+      ctx.fillStyle = looted ? '#77777799' : '#d8d2c4';
+      for (const [ox, h] of [[-0.12, 0.16], [0.02, 0.24], [0.14, 0.12]]) ctx.fillRect(sx + ox * S, sy - h * S, S * 0.06, h * S);
+    }
+    if (t.features & 8) {
+      ctx.fillStyle = '#ffd76a';
+      ctx.font = `${Math.round(S * 0.3)}px system-ui`;
+      ctx.textAlign = 'center';
+      ctx.fillText('✦', sx, sy - S * 0.08);
+    }
+    if (t.features & 16) mark('#8b5a2b', -0.2);
+    if (t.features & 32) mark('#cfd3d8', 0.2);
+    if (t.features & 64) mark('#9be7ff', 0);
+  }
+  ctx.restore();
+}
+
 function frame(now: number) {
   const st = client.state;
   if (!st) return requestAnimationFrame(frame);
   const W = innerWidth, H = innerHeight, S = cam.size;
-  ctx.fillStyle = '#0d1013';
+  const sky = ctx.createLinearGradient(0, 0, 0, H);
+  sky.addColorStop(0, '#0e1620');
+  sky.addColorStop(1, '#0a0d11');
+  ctx.fillStyle = sky;
   ctx.fillRect(0, 0, W, H);
-  const x0 = Math.max(0, Math.floor(cam.x - W / S / 2) - 1), x1 = Math.min(st.view.map.width - 1, Math.ceil(cam.x + W / S / 2) + 1);
-  const y0 = Math.max(0, Math.floor(cam.y - H / S / 2) - 1), y1 = Math.min(st.view.map.height - 1, Math.ceil(cam.y + H / S / 2) + 1);
-  for (let y = y0; y <= y1; y++) for (let x = x0; x <= x1; x++) {
-    const t = client.tile(x, y);
-    const { sx, sy } = tileToScreen(x, y);
-    ctx.fillStyle = TERRAIN_COLORS[t?.terrain ?? 255];
-    ctx.fillRect(sx - S / 2, sy - S / 2, S - 1, S - 1);
-    if (t && t.terrain !== 255) {
-      if (t.features & 2) drawLiveArt(ctx, 'bridge', sx, sy, S);
-      else if (t.terrain === 3) drawLiveArt(ctx, 'tree', sx, sy, S);
-      else if (t.terrain === 5) drawLiveArt(ctx, 'mountain', sx, sy, S);
-    }
-    if (supplyLayer && t && (client.chunk(Math.floor(x / st.view.map.chunkSize), Math.floor(y / st.view.map.chunkSize))?.supply ?? [])[(y % st.view.map.chunkSize) * st.view.map.chunkSize + (x % st.view.map.chunkSize)]) {
-      ctx.fillStyle = '#5fbf7a55';
-      ctx.fillRect(sx - S / 2, sy - S / 2, S - 1, S - 1);
-    }
-    if (t && t.features & 128 && S > 12) {
-      ctx.strokeStyle = '#ddd';
-      ctx.lineWidth = 2;
-      ctx.strokeRect(sx - S / 3, sy - S / 3, (S * 2) / 3, (S * 2) / 3);
-    }
-    if (t && t.terrain !== 255 && !t.visible) {
-      ctx.fillStyle = '#0008';
-      ctx.fillRect(sx - S / 2, sy - S / 2, S - 1, S - 1);
-    }
-    if (t && t.features & 0b1111100 && S > 16) {
-      ctx.fillStyle = '#fff8';
-      ctx.fillRect(sx + S / 4, sy - S / 2 + 2, 4, 4);
-    }
+  const { x0, x1, y0, y1 } = visibleBox();
+  const cs = st.view.map.chunkSize;
+  const moveSet = new Map(moveTiles.map(m => [m.y * st.view.map.width + m.x, m]));
+
+  // Объекты по диагоналям глубины (x+y): рисуются после клеток своей диагонали.
+  const layers = new Map<number, (() => void)[]>();
+  const put = (x: number, y: number, fn: () => void) => {
+    const d = Math.floor(x + y + 0.5);
+    (layers.get(d) ?? layers.set(d, []).get(d)!).push(fn);
+  };
+  for (const c of st.view.cities) put(c.x, c.y, () => drawCity(c));
+  for (const o of st.view.structures) put(o.x, o.y, () => drawObelisk(o));
+  for (const o of st.view.mode.objectives) put(o.x, o.y, () => {
+    const { sx, sy } = tileToScreen(o.x, o.y);
+    ctx.fillStyle = st.view.players.find(p => p.id === o.holder)?.color ?? '#ffd76a';
+    ctx.beginPath();
+    ctx.moveTo(sx, sy - S * 0.85); ctx.lineTo(sx + S * 0.1, sy - S * 0.72); ctx.lineTo(sx, sy - S * 0.59); ctx.lineTo(sx - S * 0.1, sy - S * 0.72);
+    ctx.fill();
+  });
+  for (const su of st.view.staleUnits) put(su.x, su.y, () => {
+    const { sx, sy } = tileToScreen(su.x, su.y);
+    ctx.globalAlpha = 0.35;
+    drawUnit(sx, sy, su.type, st.view.players.find(p => p.id === su.owner)?.color ?? '#999', su.hp, false);
+    ctx.globalAlpha = 1;
+  });
+  const { units, floats } = displayUnits(now);
+  for (const u of units) {
+    if (u.carriedBy) continue; // груз рисуется числом на транспорте
+    const ux = u.x + (u.dx ?? 0), uy = u.y + (u.dy ?? 0);
+    put(ux, uy, () => {
+      const { sx, sy } = tileToScreen(ux, uy);
+      drawUnit(sx, sy, u.type, st.view.players.find(p => p.id === u.owner)?.color ?? '#999', u.hp, u.id === selected, u.statuses.some(s => s.id === 'fortified'), u.maxHp);
+      if (u.cargo) {
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold 11px system-ui';
+        ctx.textAlign = 'center';
+        ctx.fillText(`⛵+${u.cargo}`, sx, sy + S * 0.3);
+      }
+    });
   }
-  // доступное перемещение
-  ctx.fillStyle = '#f2c14e44';
-  for (const m of moveTiles) {
-    const { sx, sy } = tileToScreen(m.x, m.y);
-    ctx.fillRect(sx - S / 2, sy - S / 2, S - 1, S - 1);
-  }
-  // города
-  for (const c of st.view.cities) {
-    const { sx, sy } = tileToScreen(c.x, c.y);
-    const color = st.view.players.find(p => p.id === c.owner)?.color ?? '#bbb';
-    drawLiveArt(ctx, 'castle', sx, sy, S, c.visibleNow ? 1 : 0.4);
-    ctx.strokeStyle = color;
-    ctx.lineWidth = 3;
-    ctx.strokeRect(sx - S / 2 + 2, sy - S / 2 + 2, S - 5, S - 5);
-    if (c.contestedBy) {
-      ctx.strokeStyle = '#e0614f';
-      ctx.setLineDash([4, 3]);
-      ctx.strokeRect(sx - S / 2 + 5, sy - S / 2 + 5, S - 11, S - 11);
-      ctx.setLineDash([]);
+
+  for (let d = x0 + y0; d <= x1 + y1; d++) {
+    const xa = Math.max(x0, d - y1), xb = Math.min(x1, d - y0);
+    for (let x = xa; x <= xb; x++) {
+      const y = d - x;
+      const t = client.tile(x, y);
+      let overlay: string | null = null;
+      const m = moveSet.get(y * st.view.map.width + x);
+      if (m) overlay = m.embark || m.disembark ? '#6fc3ff66' : '#f2c14e55';
+      else if (supplyLayer && t && (client.chunk(Math.floor(x / cs), Math.floor(y / cs))?.supply ?? [])[(y % cs) * cs + (x % cs)]) overlay = '#5fbf7a44';
+      drawTile(x, y, t, overlay);
     }
-    if (S > 20) {
-      ctx.fillStyle = c.visibleNow ? '#fff' : '#fff8';
-      ctx.font = '10px system-ui';
-      ctx.textAlign = 'center';
-      ctx.fillText(c.name + (c.isCapital ? ' ★' : ''), sx, sy + S / 2 + 10);
+    for (let x = xa; x <= xb; x++) {
+      const t = client.tile(x, d - x);
+      if (t && t.terrain !== 255) drawTileProps(x, d - x, t);
     }
+    for (const fn of layers.get(d) ?? []) fn();
   }
-  // приказы
+
+  // Приказы и метки — поверх сцены.
   for (const o of st.orders) {
     const ord = o.order;
     if (ord.kind !== 'unit') continue;
     const u = st.view.units.find(x => x.id === ord.unitId);
-    if (!u) continue;
+    if (!u || (!ord.path.length && ord.mode !== 'attack')) continue;
     ctx.strokeStyle = ord.mode === 'attack' ? '#e0614f' : '#f2c14e';
-    ctx.lineWidth = 2;
+    ctx.lineWidth = 3;
+    ctx.setLineDash([6, 4]);
     ctx.beginPath();
     let p = tileToScreen(u.x, u.y);
     ctx.moveTo(p.sx, p.sy);
@@ -673,103 +868,152 @@ function frame(now: number) {
       const t = st.view.units.find(x => x.id === ord.targetUnitId);
       if (t) {
         const tp = tileToScreen(t.x, t.y);
-        ctx.lineTo(tp.sx, tp.sy);
+        ctx.lineTo(tp.sx, tp.sy - S * 0.3);
       }
     }
     ctx.stroke();
-  }
-  // обелиски
-  for (const o of st.view.structures) {
-    const { sx, sy } = tileToScreen(o.x, o.y);
-    ctx.fillStyle = st.view.players.find(p => p.id === o.owner)?.color ?? '#ccc';
-    ctx.fillRect(sx - S * 0.08, sy - S * 0.45, S * 0.16, S * 0.4);
-    if (o.owner === st.view.me.id) {
-      ctx.strokeStyle = o.linked ? '#b48cff' : '#555';
-      ctx.beginPath();
-      ctx.arc(sx, sy, S * (BALANCE.obelisks.fieldRadius + 0.5), 0, Math.PI * 2);
-      ctx.stroke();
-    }
-  }
-  // цели влияния и метки
-  for (const o of st.view.mode.objectives) {
-    const { sx, sy } = tileToScreen(o.x, o.y);
-    ctx.fillStyle = st.view.players.find(p => p.id === o.holder)?.color ?? '#ffd76a';
-    ctx.beginPath();
-    ctx.moveTo(sx, sy - S * 0.45);
-    ctx.lineTo(sx + S * 0.2, sy - S * 0.25);
-    ctx.lineTo(sx, sy - S * 0.05);
-    ctx.lineTo(sx - S * 0.2, sy - S * 0.25);
-    ctx.fill();
+    ctx.setLineDash([]);
   }
   for (const mk of markers) {
     const { sx, sy } = tileToScreen(mk.x, mk.y);
     ctx.fillStyle = '#fff';
     ctx.font = '11px system-ui';
     ctx.textAlign = 'center';
-    ctx.fillText('⚑ ' + mk.label, sx, sy - S * 0.55);
-  }
-  // устаревшие сведения
-  for (const su of st.view.staleUnits) {
-    const { sx, sy } = tileToScreen(su.x, su.y);
-    ctx.globalAlpha = 0.35;
-    drawUnit(sx, sy, su.type, st.view.players.find(p => p.id === su.owner)?.color ?? '#999', su.hp, false);
-    ctx.globalAlpha = 1;
-  }
-  const { units, floats } = displayUnits(now);
-  for (const u of units) {
-    if (u.carriedBy) continue; // груз рисуется числом на транспорте
-    const { sx, sy } = tileToScreen(u.x + (u.dx ?? 0), u.y + (u.dy ?? 0));
-    drawUnit(sx, sy, u.type, st.view.players.find(p => p.id === u.owner)?.color ?? '#999', u.hp, u.id === selected, u.statuses.some(s => s.id === 'fortified'));
-    if (u.cargo) {
-      ctx.fillStyle = '#fff';
-      ctx.font = 'bold 10px system-ui';
-      ctx.fillText(`+${u.cargo}`, sx - S * 0.34, sy + S * 0.45);
-    }
+    ctx.fillText('⚑ ' + mk.label, sx, sy - S * 0.9);
   }
   for (const f of floats) {
     const { sx, sy } = tileToScreen(f.x, f.y);
     ctx.fillStyle = '#fff';
-    ctx.font = 'bold 14px system-ui';
+    ctx.strokeStyle = '#000a';
+    ctx.lineWidth = 3;
+    ctx.font = 'bold 15px system-ui';
     ctx.textAlign = 'center';
     ctx.globalAlpha = 1 - f.p * 0.5;
-    ctx.fillText(f.text, sx, sy - S / 2 - f.p * 14);
+    ctx.strokeText(f.text, sx, sy - S * 0.9 - f.p * 16);
+    ctx.fillText(f.text, sx, sy - S * 0.9 - f.p * 16);
     ctx.globalAlpha = 1;
+  }
+  if (now - lastChunkCheck > 600) {
+    lastChunkCheck = now;
+    void loadVisibleChunks();
   }
   requestAnimationFrame(frame);
 }
+let lastChunkCheck = 0;
 
-function drawUnit(sx: number, sy: number, type: string, color: string, hp: number, sel: boolean, fort = false) {
+function drawCity(c: StateResponse['view']['cities'][number]) {
+  const st = client.state!;
   const S = cam.size;
-  if (drawLiveArt(ctx, type, sx, sy, S)) {
-    ctx.strokeStyle = sel ? '#f2c14e' : color; ctx.lineWidth = sel ? 3 : 2;
-    ctx.strokeRect(sx-S*.43, sy-S*.43, S*.86, S*.86);
-    ctx.fillStyle = color; ctx.fillRect(sx-S*.42,sy+S*.32,S*.84,Math.max(3,S*.1));
-    ctx.fillStyle = '#172737'; ctx.fillRect(sx+S*.16,sy-S*.46,S*.3,14);
-    ctx.font='bold 10px system-ui';ctx.textAlign='center';ctx.fillStyle='#fff';ctx.fillText(String(hp),sx+S*.31,sy-S*.46+11);
-    if(fort){ctx.strokeStyle='#fff';ctx.strokeRect(sx-S*.47,sy-S*.47,S*.94,S*.94);}
-    return;
-  }
-  ctx.fillStyle = color;
-  ctx.beginPath();
-  ctx.arc(sx, sy, S * 0.34, 0, Math.PI * 2);
+  const { sx, sy } = tileToScreen(c.x, c.y);
+  const color = st.view.players.find(p => p.id === c.owner)?.color ?? '#bbb';
+  // Площадка владельца
+  diamond(sx, sy, S, 0.95);
+  ctx.fillStyle = color + '55';
   ctx.fill();
-  ctx.lineWidth = sel ? 3 : 1;
-  ctx.strokeStyle = sel ? '#f2c14e' : '#000';
+  ctx.strokeStyle = color;
+  ctx.lineWidth = 2;
   ctx.stroke();
-  if (fort) {
-    ctx.strokeStyle = '#fff';
-    ctx.lineWidth = 1;
-    ctx.strokeRect(sx - S * 0.42, sy - S * 0.42, S * 0.84, S * 0.84);
+  const scale = 0.75 + Math.min(c.level, 5) * 0.08;
+  if (!drawLiveArtIso(ctx, 'castle', sx, sy + S * 0.2, S, c.visibleNow ? 1 : 0.5, scale)) {
+    ctx.fillStyle = '#d8cfb8';
+    ctx.fillRect(sx - S * 0.22, sy - S * 0.42, S * 0.44, S * 0.42);
+    ctx.fillStyle = color;
+    ctx.fillRect(sx - S * 0.26, sy - S * 0.5, S * 0.52, S * 0.1);
   }
-  ctx.fillStyle = '#fff';
-  ctx.font = `bold ${Math.round(S * 0.36)}px system-ui`;
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.fillText(UNIT_LETTER[type] ?? '?', sx, sy + 1);
-  ctx.textBaseline = 'alphabetic';
-  if (S > 18) {
-    ctx.font = '9px system-ui';
-    ctx.fillText(String(hp), sx + S * 0.34, sy - S * 0.3);
+  if (c.contestedBy) {
+    ctx.strokeStyle = '#e0614f';
+    ctx.setLineDash([5, 4]);
+    ctx.lineWidth = 2;
+    diamond(sx, sy, S, 1.1);
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+  if (S > 20) {
+    const label = c.name + (c.isCapital ? ' ★' : '') + ` ${c.level}`;
+    ctx.font = 'bold 11px system-ui';
+    ctx.textAlign = 'center';
+    const w = ctx.measureText(label).width + 10;
+    ctx.fillStyle = '#000a';
+    ctx.fillRect(sx - w / 2, sy + S * 0.2, w, 16);
+    ctx.fillStyle = c.visibleNow ? '#fff' : '#fff8';
+    ctx.fillText(label, sx, sy + S * 0.2 + 12);
+  }
+}
+
+function drawObelisk(o: StateResponse['view']['structures'][number]) {
+  const st = client.state!;
+  const S = cam.size;
+  const { sx, sy } = tileToScreen(o.x, o.y);
+  const color = st.view.players.find(p => p.id === o.owner)?.color ?? '#ccc';
+  if (o.owner === st.view.me.id) {
+    const r = BALANCE.obelisks.fieldRadius + 0.5;
+    const pts = [[-r, -r], [r, -r], [r, r], [-r, r]].map(([dx, dy]) => project(o.x + dx, o.y + dy, 0));
+    ctx.strokeStyle = o.linked ? '#b48cffaa' : '#55555599';
+    ctx.lineWidth = 2;
+    ctx.beginPath();
+    pts.forEach((p, i) => (i ? ctx.lineTo(p.sx, p.sy) : ctx.moveTo(p.sx, p.sy)));
+    ctx.closePath();
+    ctx.stroke();
+  }
+  ctx.fillStyle = '#3b3550';
+  ctx.beginPath();
+  ctx.moveTo(sx - S * 0.08, sy); ctx.lineTo(sx - S * 0.05, sy - S * 0.6); ctx.lineTo(sx, sy - S * 0.7); ctx.lineTo(sx + S * 0.05, sy - S * 0.6); ctx.lineTo(sx + S * 0.08, sy); ctx.closePath();
+  ctx.fill();
+  ctx.fillStyle = color;
+  ctx.fillRect(sx - S * 0.02, sy - S * 0.5, S * 0.04, S * 0.3);
+}
+
+function drawUnit(sx: number, sy: number, type: string, color: string, hp: number, sel: boolean, fort = false, maxHp = 0) {
+  const S = cam.size;
+  // Тень и кольцо владельца на земле.
+  ctx.fillStyle = '#0006';
+  ctx.beginPath(); ctx.ellipse(sx, sy + S * 0.02, S * 0.26, S * 0.12, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.strokeStyle = sel ? '#f2c14e' : color;
+  ctx.lineWidth = sel ? 4 : 3;
+  ctx.beginPath(); ctx.ellipse(sx, sy + S * 0.02, S * 0.3, S * 0.14, 0, 0, Math.PI * 2); ctx.stroke();
+  let top = sy - S * 0.85;
+  if (!drawLiveArtIso(ctx, type, sx, sy + S * 0.04, S)) {
+    // Условная фигура: столб с щитом в цвете владельца.
+    const naval = BALANCE.units[type]?.class === 'naval';
+    if (naval) {
+      ctx.fillStyle = '#6b4a2b';
+      ctx.beginPath(); ctx.moveTo(sx - S * 0.3, sy - S * 0.08); ctx.lineTo(sx + S * 0.3, sy - S * 0.08); ctx.lineTo(sx + S * 0.2, sy + S * 0.06); ctx.lineTo(sx - S * 0.2, sy + S * 0.06); ctx.closePath(); ctx.fill();
+      ctx.fillStyle = '#eee';
+      ctx.beginPath(); ctx.moveTo(sx, sy - S * 0.6); ctx.lineTo(sx + S * 0.2, sy - S * 0.12); ctx.lineTo(sx, sy - S * 0.12); ctx.closePath(); ctx.fill();
+      top = sy - S * 0.65;
+    } else {
+      ctx.fillStyle = color;
+      ctx.beginPath(); ctx.ellipse(sx, sy - S * 0.28, S * 0.17, S * 0.28, 0, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#e8d6b8';
+      ctx.beginPath(); ctx.arc(sx, sy - S * 0.6, S * 0.1, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = '#fff';
+      ctx.font = `bold ${Math.round(S * 0.2)}px system-ui`;
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(UNIT_LETTER[type] ?? '?', sx, sy - S * 0.26);
+      ctx.textBaseline = 'alphabetic';
+      top = sy - S * 0.72;
+    }
+  }
+  if (S < 18) return;
+  // Полоса здоровья над фигурой.
+  const w = S * 0.5, frac = maxHp ? Math.max(0, Math.min(1, hp / maxHp)) : 1;
+  ctx.fillStyle = '#000b';
+  ctx.fillRect(sx - w / 2 - 1, top - 7, w + 2, 6);
+  ctx.fillStyle = frac > 0.6 ? '#5fbf7a' : frac > 0.3 ? '#f2c14e' : '#e0614f';
+  ctx.fillRect(sx - w / 2, top - 6, w * frac, 4);
+  ctx.fillStyle = color;
+  ctx.fillRect(sx - w / 2 - 6, top - 8, 5, 8);
+  if (S > 30) {
+    ctx.font = 'bold 10px system-ui';
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#fff';
+    ctx.fillText(String(hp), sx + w / 2 + 3, top - 1);
+  }
+  if (fort) {
+    ctx.font = `${Math.round(S * 0.22)}px system-ui`;
+    ctx.textAlign = 'center';
+    ctx.fillText('🛡', sx - S * 0.3, sy - S * 0.1);
   }
 }
 
@@ -793,19 +1037,18 @@ function bindInput() {
     pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
     if (pinch && pointers.size === 2) {
       const [a, b] = [...pointers.values()];
-      cam.size = Math.max(8, Math.min(64, pinch.size * Math.hypot(a.x - b.x, a.y - b.y) / pinch.d));
+      cam.size = Math.max(16, Math.min(160, pinch.size * Math.hypot(a.x - b.x, a.y - b.y) / pinch.d));
     } else if (drag) {
       const dx = e.clientX - drag.x, dy = e.clientY - drag.y;
       if (Math.abs(dx) + Math.abs(dy) > 6) drag.moved = true;
-      cam.x = drag.cx - dx / cam.size;
-      cam.y = drag.cy - dy / cam.size;
+      panBy(drag.cx, drag.cy, dx, dy);
     }
   };
   canvas.onpointerup = e => {
     pointers.delete(e.pointerId);
     if (pointers.size < 2) pinch = null;
-    if (drag && !drag.moved) void tap(screenToTile(e.clientX, e.clientY));
-    if (drag?.moved) void loadVisibleChunks();
+    if (drag && !drag.moved) void tap(pickTile(e.clientX, e.clientY));
+    void loadVisibleChunks();
     drag = null;
   };
   canvas.onpointercancel = e => {
@@ -815,7 +1058,7 @@ function bindInput() {
   };
   canvas.onwheel = e => {
     e.preventDefault();
-    cam.size = Math.max(8, Math.min(64, cam.size * (e.deltaY > 0 ? 0.9 : 1.1)));
+    cam.size = Math.max(16, Math.min(160, cam.size * (e.deltaY > 0 ? 0.9 : 1.1)));
     void loadVisibleChunks();
   };
 }
