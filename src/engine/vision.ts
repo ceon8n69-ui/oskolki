@@ -3,6 +3,7 @@ import { terrainRule } from '../shared/balance.ts';
 import type { GameState, PlayerId, UnitState } from '../shared/types.ts';
 import { NEUTRAL } from '../shared/types.ts';
 import { idx, inBounds, terrainAt } from './grid.ts';
+import { commanderAura, techs, visionOf } from './stats.ts';
 
 export interface Vision {
   /** 1 — клетка видна сейчас. */
@@ -20,27 +21,37 @@ function stamp(state: GameState, grid: Uint8Array, cx: number, cy: number, r: nu
   }
 }
 
-export function computeVision(b: Balance, state: GameState, playerId: PlayerId): Vision {
+/** Дополнительный временный источник обзора (например, «Разведывательный импульс» командира). */
+export interface ExtraVision {
+  owner: PlayerId;
+  x: number;
+  y: number;
+  r: number;
+}
+
+export function computeVision(b: Balance, state: GameState, playerId: PlayerId, extra: ExtraVision[] = []): Vision {
   const n = state.map.width * state.map.height;
   const visible = new Uint8Array(n);
   const close = new Uint8Array(n);
   for (const u of state.units) {
     if (u.owner !== playerId || u.hp <= 0) continue;
-    const bonus = terrainRule(b, terrainAt(state.map, u.x, u.y)).visionBonus;
-    stamp(state, visible, u.x, u.y, b.units[u.type].vision + bonus);
+    const bonus = terrainRule(b, terrainAt(state.map, u.x, u.y)).visionBonus + commanderAura(b, state, playerId, u, 'scouting');
+    stamp(state, visible, u.x, u.y, visionOf(b, state, u) + bonus);
     stamp(state, close, u.x, u.y, 1);
   }
+  const cityBonus = techs(b, state, playerId).cityVisionBonus;
   for (const c of state.cities) {
     if (c.owner !== playerId) continue;
-    stamp(state, visible, c.x, c.y, b.cities.visionRadius);
+    stamp(state, visible, c.x, c.y, b.cities.visionRadius + cityBonus);
     stamp(state, close, c.x, c.y, 1);
   }
+  for (const e of extra) if (e.owner === playerId) stamp(state, visible, e.x, e.y, e.r);
   return { visible, close };
 }
 
-export function computeAllVision(b: Balance, state: GameState): Map<PlayerId, Vision> {
+export function computeAllVision(b: Balance, state: GameState, extra: ExtraVision[] = []): Map<PlayerId, Vision> {
   const out = new Map<PlayerId, Vision>();
-  for (const p of state.players) out.set(p.id, computeVision(b, state, p.id));
+  for (const p of state.players) out.set(p.id, computeVision(b, state, p.id, extra));
   return out;
 }
 

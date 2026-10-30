@@ -39,7 +39,7 @@ export const Feature = {
   ResourceWood: 1 << 4,
   ResourceIron: 1 << 5,
   ResourceCrystal: 1 << 6,
-  Village: 1 << 7,
+  Fort: 1 << 7,
 } as const;
 
 export interface MapData {
@@ -74,6 +74,10 @@ export interface UnitState {
   countersUsed: number;
   createdTurn: number;
   route?: UnitRoute | null;
+  maxHp: number; // с учётом народа и ранга
+  perks: string[]; // улучшения, выбранные при повышении ранга
+  pendingPerks: number; // сколько улучшений ждут выбора
+  supplyOut: number; // ходов подряд вне зоны снабжения
 }
 
 export interface StatusEffect {
@@ -94,14 +98,32 @@ export interface CityState {
   contestedSinceTurn: number | null;
   productionStock: number;
   queue: ProductionItem[];
+  buildings: string[];
+  food: number;
+  specialization: string | null;
 }
 
 export interface ProductionItem {
-  kind: 'unit';
-  unitType: string;
+  kind: 'unit' | 'building';
+  unitType: string; // для building — идентификатор постройки
   progress: number;
-  paid: boolean; // золото списано один раз при постановке
+  paid: boolean; // золото и материалы списаны один раз при постановке
   orderId: string;
+}
+
+export interface MaterialStock {
+  wood: number;
+  iron: number;
+  crystal: number;
+}
+
+export interface CommanderState {
+  unitId: UnitId | null;
+  points: number;
+  cooldowns: Record<string, number>; // способность → ход, с которого доступна
+  directions: Record<string, number>; // направление → уровень
+  pendingChoices: number;
+  respawnTurn: number | null;
 }
 
 export interface PlayerState {
@@ -116,6 +138,8 @@ export interface PlayerState {
   researchProgress: number;
   isBot: boolean;
   eliminated: boolean;
+  materials: MaterialStock;
+  commander: CommanderState;
 }
 
 export interface GameState {
@@ -170,7 +194,39 @@ export interface UnitOrder {
   /** Для долгого маршрута: остановиться, если рядом замечен противник (по умолчанию true). */
   stopOnThreat?: boolean;
   /** build: что строить на текущей клетке. */
-  build?: 'road';
+  build?: BuildKind;
+  /** attack: особый приём (например, отталкивание щитом). */
+  ability?: 'knockback';
+}
+
+export type BuildKind = 'road' | 'fort' | 'forest';
+
+/** Постройка в городе. */
+export interface ConstructOrder {
+  kind: 'construct';
+  cityId: CityId;
+  building: string;
+}
+
+export interface SpecializeOrder {
+  kind: 'specialize';
+  cityId: CityId;
+  specialization: string;
+}
+
+/** Выбор улучшения при повышении ранга. */
+export interface PromoteOrder {
+  kind: 'promote';
+  unitId: UnitId;
+  perk: string;
+}
+
+export interface CommanderOrder {
+  kind: 'commander';
+  action: 'ability' | 'direction';
+  ability?: string;
+  target?: Coord;
+  direction?: string;
 }
 
 export interface RecruitOrder {
@@ -184,7 +240,7 @@ export interface ResearchOrder {
   queue: string[]; // полная желаемая очередь
 }
 
-export type Order = UnitOrder | RecruitOrder | ResearchOrder;
+export type Order = UnitOrder | RecruitOrder | ResearchOrder | ConstructOrder | SpecializeOrder | PromoteOrder | CommanderOrder;
 
 export interface SubmittedOrder {
   id: string;
@@ -201,6 +257,14 @@ export function orderSubjectKey(o: Order): string {
       return `recruit:${o.cityId}`;
     case 'research':
       return 'research';
+    case 'construct':
+      return `construct:${o.cityId}`;
+    case 'specialize':
+      return `specialize:${o.cityId}`;
+    case 'promote':
+      return `promote:${o.unitId}`;
+    case 'commander':
+      return o.action === 'ability' ? 'commander:ability' : 'commander:direction';
   }
 }
 
@@ -227,9 +291,28 @@ export type TurnEvent =
   | { t: 'route_continued'; unitId: UnitId; owner: PlayerId; remaining: number }
   | { t: 'route_paused'; unitId: UnitId; owner: PlayerId; at: Coord; reason: 'threat' | 'blocked' | 'invalid' }
   | { t: 'route_completed'; unitId: UnitId; owner: PlayerId; at: Coord }
-  | { t: 'build_started'; unitId: UnitId; owner: PlayerId; at: Coord; build: 'road'; goldSpent: number }
+  | { t: 'build_started'; unitId: UnitId; owner: PlayerId; at: Coord; build: BuildKind; goldSpent: number }
   | { t: 'road_built'; at: Coord; by: PlayerId }
-  | { t: 'build_failed'; unitId: UnitId; owner: PlayerId; at: Coord; reason: string };
+  | { t: 'build_failed'; unitId: UnitId; owner: PlayerId; at: Coord; reason: string }
+  | { t: 'fort_built'; at: Coord; by: PlayerId }
+  | { t: 'forest_planted'; at: Coord; by: PlayerId }
+  | { t: 'zoc_stop'; unitId: UnitId; owner: PlayerId; at: Coord; tick: number }
+  | { t: 'suppressed'; unitId: UnitId; owner: PlayerId; at: Coord }
+  | { t: 'knockback'; unitId: UnitId; owner: PlayerId; from: Coord; to: Coord }
+  | { t: 'promotion_available'; unitId: UnitId; owner: PlayerId }
+  | { t: 'perk_chosen'; unitId: UnitId; owner: PlayerId; perk: string }
+  | { t: 'building_completed'; cityId: CityId; owner: PlayerId; building: string; at: Coord }
+  | { t: 'construction_queued'; cityId: CityId; owner: PlayerId; building: string }
+  | { t: 'city_grew'; cityId: CityId; owner: PlayerId; level: number; at: Coord }
+  | { t: 'city_specialized'; cityId: CityId; owner: PlayerId; specialization: string; at: Coord }
+  | { t: 'materials'; playerId: PlayerId; wood: number; iron: number; crystal: number }
+  | { t: 'supply_warning'; unitId: UnitId; owner: PlayerId; at: Coord; level: 'low' | 'none' }
+  | { t: 'supply_restored'; unitId: UnitId; owner: PlayerId; at: Coord }
+  | { t: 'healed'; unitId: UnitId; owner: PlayerId; amount: number }
+  | { t: 'commander_ability'; playerId: PlayerId; ability: string; at: Coord; target?: Coord; affected: UnitId[] }
+  | { t: 'commander_direction'; playerId: PlayerId; direction: string; level: number }
+  | { t: 'commander_fallen'; playerId: PlayerId; at: Coord; respawnTurn: number }
+  | { t: 'commander_respawned'; playerId: PlayerId; unitId: UnitId; at: Coord };
 
 /** Событие с видимостью: список игроков, которым его можно показать. */
 export interface StoredEvent {

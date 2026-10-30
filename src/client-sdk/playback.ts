@@ -5,7 +5,9 @@ import type { Coord, StoredEvent, TurnEvent } from '../shared/types.ts';
 export type StepKind =
   | 'fortify' | 'move' | 'blocked' | 'attack' | 'impact' | 'counter' | 'destroy' | 'attack_failed'
   | 'contest' | 'contest_cleared' | 'capture' | 'recruit' | 'rank_up' | 'research' | 'income' | 'info'
-  | 'build_start' | 'road' | 'route_paused';
+  | 'build_start' | 'road' | 'route_paused'
+  | 'zoc_stop' | 'suppressed' | 'knockback' | 'fort' | 'forest' | 'commander_ability' | 'commander_fallen' | 'commander_respawned'
+  | 'healed' | 'city_grew' | 'building' | 'supply_warning';
 
 export interface PlaybackStep {
   id: number;
@@ -51,6 +53,8 @@ export function buildTimeline(events: StoredEvent[], myPlayerId: string, opts: T
     if (e.t === 'build_started') add('build_start', t, 400, e, e.at, mine(e.owner));
     if (e.t === 'route_paused') add('route_paused', t, 400, e, e.at, true);
   }
+  // Способности командира объявлены в фазе проверки приказов — показываем их первыми.
+  for (const e of byPhase('validate')) if (e.t === 'commander_ability') add('commander_ability', 0, 700, e, e.at, true);
   if (prep.length) t += reduced ? 100 : 400;
 
   // Движение: шаги одного такта идут параллельно.
@@ -60,6 +64,7 @@ export function buildTimeline(events: StoredEvent[], myPlayerId: string, opts: T
     for (const e of moves) {
       if (e.t === 'move' && e.tick === tick) add('move', t, moveMs, e, e.to, mine(e.owner));
       if (e.t === 'move_blocked' && e.tick === tick) add('blocked', t + moveMs * 0.5, 400, e, e.at, mine(e.owner));
+      if (e.t === 'zoc_stop' && e.tick === tick) add('zoc_stop', t + moveMs, 400, e, e.at, mine(e.owner));
     }
     t += moveMs;
   }
@@ -102,6 +107,9 @@ export function buildTimeline(events: StoredEvent[], myPlayerId: string, opts: T
       // Удаление объекта — после эффекта; следующие события ступени начинаются после него.
       if (combat[i + 1]?.t !== 'unit_destroyed') t += 500;
     } else if (e.t === 'attack_failed') add('attack_failed', t, 300, e, e.at, mine(e.owner));
+    else if (e.t === 'suppressed') add('suppressed', t, 400, e, e.at, mine(e.owner));
+    else if (e.t === 'knockback') add('knockback', t, 350, e, e.to, true);
+    else if (e.t === 'commander_fallen') add('commander_fallen', t, 800, e, e.at, true);
     else if (e.t === 'xp' && e.rankUp) add('rank_up', t, 700, e, null, true);
     i++;
   }
@@ -119,6 +127,13 @@ export function buildTimeline(events: StoredEvent[], myPlayerId: string, opts: T
   for (const e of byPhase('economy')) {
     if (e.t === 'unit_recruited') add('recruit', t, 600, e, e.at, true);
     if (e.t === 'road_built') add('road', t, 600, e, e.at, mine(e.by));
+    if (e.t === 'fort_built') add('fort', t, 600, e, e.at, mine(e.by));
+    if (e.t === 'forest_planted') add('forest', t, 600, e, e.at, mine(e.by));
+    if (e.t === 'building_completed') add('building', t, 600, e, e.at, true);
+    if (e.t === 'city_grew') add('city_grew', t, 600, e, e.at, true);
+    if (e.t === 'healed') add('healed', t, 400, e, null, false);
+    if (e.t === 'supply_warning') add('supply_warning', t, 400, e, e.at, true);
+    if (e.t === 'commander_respawned') add('commander_respawned', t, 700, e, e.at, true);
     if (e.t === 'research_completed') add('research', t, 600, e, null, true);
     if (e.t === 'income') add('income', t, 0, e, null, false);
   }

@@ -17,9 +17,14 @@ const REASONS: Record<string, string> = {
   target_not_visible: 'Цель не видна', not_enough_gold: 'Недостаточно золота', unit_locked: 'Нужна технология', queue_full: 'Очередь заполнена',
   turn_closed: 'Ход уже закрыт', version_conflict: 'Приказ изменён в другом окне', impassable: 'Непроходимо', deficit: 'Дефицит золота',
   city_contested: 'Город оспаривается', not_planning: 'Сейчас не фаза планирования',
+  not_enough_resources: 'Не хватает материалов', cannot_attack_after_move: 'Это орудие не стреляет после движения', unit_cannot_build: 'Этот отряд так не строит',
+  outside_territory: 'Только на своей территории', building_locked: 'Нужна технология', building_exists: 'Уже построено или строится',
+  city_level_too_low: 'Нужен 3-й уровень города', ability_on_cooldown: 'Способность перезаряжается', not_enough_command_points: 'Мало очков командования',
+  commander_absent: 'Командир пал', tech_unavailable: 'Технология недоступна вашему народу или исключена выбором', tech_excluded: 'Взаимоисключающие технологии',
+  forest_needs_plains: 'Лес сажают на равнине', fort_exists: 'Укрепление уже есть', route_through_unexplored: 'Маршрут — только по разведанным клеткам',
 };
 const TERRAIN_COLORS: Record<number, string> = { 0: '#1f4e79', 1: '#2f6f9f', 2: '#8fb36b', 3: '#3f7a46', 4: '#a99a63', 5: '#7d7f86', 255: '#0d1013' };
-const UNIT_LETTER: Record<string, string> = { scout: 'Р', infantry: 'П', spearman: 'К', archer: 'Л' };
+const UNIT_LETTER: Record<string, string> = { scout: 'Р', infantry: 'П', spearman: 'К', archer: 'Л', shieldbearer: 'Щ', cavalry: 'В', siege: 'О', engineer: 'И', legionary: 'Лг', standard: 'Зн', ranger: 'Сл', warden: 'Ст', ironclad: 'Лт', bombard: 'Б', corsair: 'Кр', tidecaller: 'З', commander: '★' };
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 function toast(text: string) {
@@ -86,18 +91,19 @@ async function lobby() {
   client.close();
   const matches = await client.listMatches().catch(() => []);
   app.innerHTML = `<div class="screen"><h2>Осколки королевств</h2>
+    <div class="row">Народ: <select id="fac">${Object.entries(BALANCE.factions).map(([id, f]) => `<option value="${id}">${esc(f.name)}</option>`).join('')}</select></div>
     <div class="row"><button class="primary" data-p="quick">Быстрая партия (90 с)</button><button data-p="vsbot">Против бота</button><button data-p="async">Асинхронная (6 ч)</button><button data-p="campaign">Кампания 256×256</button></div>
     <div class="row"><input id="code" placeholder="Код приглашения"><button id="join">Вступить</button></div>
     <h3>Мои партии</h3>
     ${matches.map(m => `<div class="card" data-m="${m.id}"><b>${esc(m.preset)}</b> · ${m.phase === 'lobby' ? `ожидание ${m.players.length}/${m.maxPlayers}` : m.phase === 'finished' ? 'завершена' : `ход ${m.turn}`}<br><span class="muted">${m.players.map(p => esc(p.name)).join(', ')}</span></div>`).join('') || '<p class="muted">Пока нет партий</p>'}
   </div>`;
   app.querySelectorAll<HTMLButtonElement>('[data-p]').forEach(b => (b.onclick = async () => {
-    const m = await client.createMatch(b.dataset.p as 'quick');
+    const m = await client.createMatch(b.dataset.p as 'quick', (document.getElementById('fac') as HTMLSelectElement).value);
     openMatch(m.id);
   }));
   document.getElementById('join')!.onclick = async () => {
     try {
-      const m = await client.joinMatch((document.getElementById('code') as HTMLInputElement).value.trim());
+      const m = await client.joinMatch((document.getElementById('code') as HTMLInputElement).value.trim(), (document.getElementById('fac') as HTMLSelectElement).value);
       openMatch(m.id);
     } catch (e) {
       toast(e instanceof ApiError ? e.code : String(e));
@@ -112,10 +118,20 @@ async function openMatch(id: string) {
     app.innerHTML = `<div class="screen"><h2>Ожидание игроков ${info.players.length}/${info.maxPlayers}</h2>
       <p>Пригласите соперника ссылкой:</p><div class="card" style="word-break:break-all">${esc(info.inviteLink)}</div>
       <p class="muted">Код: ${esc(info.inviteCode)}</p>
+      <div class="card">${info.players.map(p => `${esc(p.name)} — ${esc(BALANCE.factions[p.faction]?.name ?? p.faction)}`).join('<br>')}</div>
+      <div class="row">Мой народ: <select id="fac2">${Object.entries(BALANCE.factions).map(([fid, f]) => `<option value="${fid}">${esc(f.name)}</option>`).join('')}</select><button id="facSet">Сменить</button></div>
       <div class="row"><button id="share">Поделиться</button><button id="startNow" class="primary">Начать сейчас</button><button id="refresh">Обновить</button><button id="back">Назад</button></div>
       <p class="muted">Начать может создатель партии, когда игроков минимум двое.</p></div>`;
     document.getElementById('share')!.onclick = () => (tg?.openTelegramLink ? tg.openTelegramLink(`https://t.me/share/url?url=${encodeURIComponent(info.inviteLink)}`) : navigator.clipboard?.writeText(info.inviteLink).then(() => toast('Ссылка скопирована')));
     document.getElementById('refresh')!.onclick = () => openMatch(id);
+    document.getElementById('facSet')!.onclick = async () => {
+      try {
+        await client.setFaction(id, (document.getElementById('fac2') as HTMLSelectElement).value);
+        openMatch(id);
+      } catch (e) {
+        toast(e instanceof ApiError ? e.code : String(e));
+      }
+    };
     document.getElementById('startNow')!.onclick = async () => {
       try {
         toast('Генерация мира…');
@@ -140,7 +156,10 @@ async function openMatch(id: string) {
 let cam = { x: 16, y: 16, size: 28 };
 let selected: string | null = null;
 let moveTiles: { x: number; y: number; cost: number }[] = [];
-let sheet: 'none' | 'city' | 'research' | 'log' = 'none';
+let sheet: 'none' | 'city' | 'research' | 'log' | 'commander' = 'none';
+let bashMode = false;
+let pulseMode = false;
+let supplyLayer = false;
 let player: TimelinePlayer | null = null;
 let playback: { before: StateResponse; after: StateResponse; events: StoredEvent[] } | null = null;
 let canvas: HTMLCanvasElement;
@@ -152,7 +171,7 @@ async function gameScreen() {
     <div class="top" id="top"></div>
     <canvas id="mini" width="120" height="120" style="position:fixed;right:8px;top:52px;z-index:2;border:1px solid #fff4;border-radius:6px;background:#000a;width:120px;height:120px"></canvas>
     <div class="bottom">
-      <button id="bResearch">Исследования</button><button id="bCities">Города</button><button id="bArmy">Армия</button><button id="bLog">Журнал</button>
+      <button id="bResearch">Исследования</button><button id="bCities">Города</button><button id="bArmy">Армия</button><button id="bCmd">Командир</button><button id="bSupply">Снабжение</button><button id="bLog">Журнал</button>
       <span class="spacer"></span><button class="primary" id="bReady">Готов</button>
     </div><div id="sheet"></div>`;
   canvas = document.getElementById('map') as HTMLCanvasElement;
@@ -180,6 +199,11 @@ async function gameScreen() {
   document.getElementById('bResearch')!.onclick = () => toggleSheet('research');
   document.getElementById('bCities')!.onclick = () => toggleSheet('city');
   document.getElementById('bLog')!.onclick = () => toggleSheet('log');
+  document.getElementById('bCmd')!.onclick = () => toggleSheet('commander');
+  document.getElementById('bSupply')!.onclick = () => {
+    supplyLayer = !supplyLayer;
+    toast(supplyLayer ? 'Слой снабжения: зелёным — своя зона' : 'Слой снабжения выключен');
+  };
   document.getElementById('bArmy')!.onclick = () => {
     const st = client.state!;
     const idle = st.view.units.filter(u => u.owner === st.view.me.id && !st.orders.some(o => o.subject === `unit:${u.id}`));
@@ -247,6 +271,8 @@ function renderHud() {
   const readyCount = st.match.players.filter(p => p.ready || p.isBot).length;
   document.getElementById('top')!.innerHTML = `
     <span class="pill">◉ ${st.view.me.gold}${st.reserved.gold ? ` (−${st.reserved.gold})` : ''}</span>
+    <span class="pill">🌲${st.view.me.materials.wood} ⛏${st.view.me.materials.iron} ◆${st.view.me.materials.crystal}</span>
+    <span class="pill">★ ${st.view.me.commander.points}</span>
     <span class="pill">+${st.view.income.gold - st.view.income.upkeep}/ход</span>
     <span class="pill">✦ ${st.view.me.researchProgress}</span>
     <span class="pill">Ход ${st.view.turn}</span><span class="pill">⏱ ${time}</span>
@@ -271,21 +297,33 @@ function toggleSheet(s: typeof sheet) {
 function renderSheet() {
   const el = document.getElementById('sheet')!;
   const st = client.state!;
+  const me = st.view.me;
   const u = selected ? st.view.units.find(x => x.id === selected) : null;
+  const locked = (req: string | null) => !!req && !me.researched.includes(req);
   if (sheet === 'none' && u) {
     const rule = BALANCE.units[u.type];
     const ord = st.orders.find(o => o.subject === `unit:${u.id}`);
     const mineU = u.owner === st.view.me.id;
-    el.innerHTML = `<div class="sheet"><h3>${esc(rule.name)} ${mineU ? '' : `· ${esc(st.view.players.find(p => p.id === u.owner)?.name ?? 'нейтрал')}`}</h3>
-      <div>❤ ${u.hp} · ⚔ ${rule.attack} · ⛨ ${rule.defense} · ➜ ${rule.move} · ◎ ${rule.range} · инициатива ${rule.initiative} · ранг ${u.rank}${u.statuses.length ? ' · ' + u.statuses.map(s => s.id).join(', ') : ''}</div>
-      ${mineU ? `<div class="muted">Приказ: ${ord ? describeOrder(ord.order) : 'нет (удержание без укрепления)'}</div>
+    const owner = st.view.players.find(p => p.id === u.owner);
+    const effects = u.statuses.map(s => BALANCE.effects[s.id]?.name ?? s.id).join(', ');
+    const perkOrder = st.orders.find(o => o.subject === `promote:${u.id}`);
+    el.innerHTML = `<div class="sheet"><h3>${esc(rule.name)} ${mineU ? '' : `· ${esc(owner?.name ?? 'нейтрал')} (${esc(BALANCE.factions[owner?.faction ?? '']?.name ?? '')})`}</h3>
+      <div>❤ ${u.hp}/${u.maxHp} · ⚔ ${rule.attack} · ⛨ ${rule.defense} · ➜ ${rule.move} · ◎ ${rule.range} · иниц. ${rule.initiative} · ранг ${u.rank}${effects ? ' · ' + esc(effects) : ''}</div>
+      <div class="muted">${rule.abilities.map(a => BALANCE.effects[a]?.name ?? a).join(', ')}${u.perks?.length ? ' · улучшения: ' + u.perks.map(p => BALANCE.perks[p].name).join(', ') : ''}</div>
+      ${mineU ? `<div class="muted">Приказ: ${ord ? describeOrder(ord.order) : 'нет (стоит на месте)'}</div>
       ${u.route?.path?.length ? `<div class="muted">Долгий маршрут: осталось ${u.route.path.length} шаг.${u.route.stopOnThreat ? ', остановка при угрозе' : ''}</div>` : ''}
-      <div class="row"><button id="uHold">Укрепиться</button>${BALANCE.roads.builders.includes(u.type) ? `<button id="uRoad">Дорога · ${BALANCE.roads.goldCost}◉</button>` : ''}${ord ? '<button id="uCancel">Отменить приказ</button>' : ''}</div>
-      <div class="muted">Подсвеченная клетка — движение в этот ход; дальняя исследованная клетка — маршрут на несколько ходов; противник — атака.</div>` : ''}</div>`;
+      ${u.pendingPerks && !perkOrder ? `<div class="row">Новый ранг — выберите улучшение: ${Object.entries(BALANCE.perks).filter(([id]) => !u.perks?.includes(id)).map(([id, p]) => `<button data-perk="${id}" title="${esc(p.description)}">${esc(p.name)}</button>`).join('')}</div>` : ''}
+      <div class="row"><button id="uHold">Укрепиться</button>
+        <button data-build="road">Дорога</button><button data-build="fort">Форт</button><button data-build="forest">Посадить лес</button>
+        ${rule.abilities.includes('knockback') ? `<button id="uBash" class="${bashMode ? 'primary' : ''}">Удар щитом: ${bashMode ? 'вкл' : 'выкл'}</button>` : ''}
+        ${ord ? '<button id="uCancel">Отменить приказ</button>' : ''}</div>
+      <div class="muted">Подсвеченная клетка — движение в этот ход; дальняя исследованная клетка — маршрут; противник — атака.</div>` : ''}</div>`;
     if (mineU) {
       document.getElementById('uHold')!.onclick = () => submit(client.hold(u.id));
-      const road = document.getElementById('uRoad');
-      if (road) road.onclick = () => submit(client.buildRoad(u.id));
+      el.querySelectorAll<HTMLButtonElement>('[data-build]').forEach(bt => (bt.onclick = () => submit(client.build(u.id, bt.dataset.build as 'road'))));
+      el.querySelectorAll<HTMLButtonElement>('[data-perk]').forEach(bt => (bt.onclick = () => submit(client.promote(u.id, bt.dataset.perk!))));
+      const bash = document.getElementById('uBash');
+      if (bash) bash.onclick = () => ((bashMode = !bashMode), renderSheet());
       const c = document.getElementById('uCancel');
       if (c) c.onclick = () => client.cancel(`unit:${u.id}`);
     }
@@ -293,31 +331,75 @@ function renderSheet() {
     const cities = st.view.cities.filter(c => c.owner === st.view.me.id);
     el.innerHTML = `<div class="sheet"><h3>Города</h3>${cities.map(c => {
       const ord = st.orders.find(o => o.subject === `recruit:${c.id}`);
-      return `<div class="card"><b>${esc(c.name)}</b> ур. ${c.level}${c.contestedBy ? ' · <b style="color:var(--bad)">оспаривается</b>' : ''} · производство ${st.view.income.production[c.id] ?? 0}/ход
-        <div class="muted">Очередь: ${c.queue.map(q => `${BALANCE.units[q.unitType].name} ${q.progress}/${BALANCE.units[q.unitType].cost.production}`).join(', ') || 'пусто'}${ord ? ` · заказано: ${BALANCE.units[(ord.order as any).unitType].name}` : ''}</div>
-        <div class="row">${Object.entries(BALANCE.units).map(([id, r]) => `<button data-c="${c.id}" data-u="${id}" ${r.requires && !st.view.me.researched.includes(r.requires) ? 'disabled' : ''}>${esc(r.name)} ${r.cost.gold}◉</button>`).join('')}
-        ${ord ? `<button data-cancel="recruit:${c.id}">Отменить</button>` : ''}</div></div>`;
+      const cons = st.orders.find(o => o.subject === `construct:${c.id}`);
+      const ci = st.view.income.cities[c.id];
+      const itemName = (q: { kind: string; unitType: string }) => (q.kind === 'building' ? BALANCE.buildings[q.unitType].name : BALANCE.units[q.unitType].name);
+      const itemCost = (q: { kind: string; unitType: string }) => (q.kind === 'building' ? BALANCE.buildings[q.unitType].cost.production : BALANCE.units[q.unitType].cost.production);
+      const need = BALANCE.cities.growthThresholds[c.level + 1];
+      const costStr = (cst: Record<string, number | undefined>) => ['gold', 'wood', 'iron', 'crystal'].filter(k => cst[k]).map(k => `${cst[k]}${{ gold: '◉', wood: '🌲', iron: '⛏', crystal: '◆' }[k]}`).join(' ');
+      return `<div class="card"><b>${esc(c.name)}</b> ур. ${c.level}${c.specialization ? ` · ${esc(BALANCE.specializations[c.specialization].name)}` : ''}${c.contestedBy ? ' · <b style="color:var(--bad)">оспаривается</b>' : ''}
+        <div class="muted">+${ci?.gold ?? 0}◉ +${ci?.production ?? 0}⚒ +${ci?.knowledge ?? 0}✦ · еда ${c.food ?? 0}/${need ?? '—'} · материалы +${ci?.wood ?? 0}🌲 +${ci?.iron ?? 0}⛏ +${ci?.crystal ?? 0}◆</div>
+        <div class="muted">Постройки: ${c.buildings.map(x => BALANCE.buildings[x].name).join(', ') || 'нет'}</div>
+        <div class="muted">Очередь: ${c.queue.map(q => `${itemName(q)} ${q.progress}/${itemCost(q)}`).join(', ') || 'пусто'}${ord ? ` · заказано: ${BALANCE.units[(ord.order as any).unitType].name}` : ''}${cons ? ` · строится: ${BALANCE.buildings[(cons.order as any).building].name}` : ''}</div>
+        <div class="row">${Object.entries(BALANCE.units).filter(([, r]) => r.recruitable !== false && (!r.faction || r.faction === me.faction)).map(([id, r]) => `<button data-c="${c.id}" data-u="${id}" ${locked(r.requires) ? 'disabled' : ''}>${esc(r.name)} ${costStr(r.cost as any)}</button>`).join('')}
+        ${ord ? `<button data-cancel="recruit:${c.id}">Отменить найм</button>` : ''}</div>
+        <div class="row">${Object.entries(BALANCE.buildings).filter(([id]) => !c.buildings.includes(id)).map(([id, x]) => `<button data-c="${c.id}" data-b="${id}" ${locked(x.requires) ? 'disabled' : ''}>${esc(x.name)} ${x.cost.production}⚒ ${costStr(x.cost as any)}</button>`).join('')}
+        ${cons ? `<button data-cancel="construct:${c.id}">Отменить стройку</button>` : ''}</div>
+        ${!c.specialization && c.level >= BALANCE.cities.specializeMinLevel ? `<div class="row">Специализация: ${Object.entries(BALANCE.specializations).map(([id, x]) => `<button data-c="${c.id}" data-spec="${id}">${esc(x.name)}</button>`).join('')}</div>` : ''}</div>`;
     }).join('') || '<p class="muted">Нет городов</p>'}</div>`;
-    el.querySelectorAll<HTMLButtonElement>('[data-u]').forEach(b => (b.onclick = () => submit(client.recruit(b.dataset.c!, b.dataset.u!))));
-    el.querySelectorAll<HTMLButtonElement>('[data-cancel]').forEach(b => (b.onclick = () => client.cancel(b.dataset.cancel!)));
+    el.querySelectorAll<HTMLButtonElement>('[data-u]').forEach(bt => (bt.onclick = () => submit(client.recruit(bt.dataset.c!, bt.dataset.u!))));
+    el.querySelectorAll<HTMLButtonElement>('[data-b]').forEach(bt => (bt.onclick = () => submit(client.construct(bt.dataset.c!, bt.dataset.b!))));
+    el.querySelectorAll<HTMLButtonElement>('[data-spec]').forEach(bt => (bt.onclick = () => submit(client.specialize(bt.dataset.c!, bt.dataset.spec!))));
+    el.querySelectorAll<HTMLButtonElement>('[data-cancel]').forEach(bt => (bt.onclick = () => client.cancel(bt.dataset.cancel!)));
   } else if (sheet === 'research') {
-    const me = st.view.me;
     const ord = st.orders.find(o => o.subject === 'research');
     const queue: string[] = ord ? (ord.order as any).queue : me.researchQueue;
+    const branches: Record<string, string> = { economy: 'Хозяйство', military: 'Военное дело', movement: 'Передвижение и снабжение', knowledge: 'Разведка и знания', legacy: 'Наследие народа' };
+    const techs = Object.entries(BALANCE.techs).filter(([, t]) => !t.faction || t.faction === me.faction);
     el.innerHTML = `<div class="sheet"><h3>Исследования · прогресс ${me.researchProgress} · +${st.view.income.knowledge}/ход</h3>
       <div class="muted">Очередь: ${queue.map(t => BALANCE.techs[t].name).join(' → ') || 'пусто'}</div>
-      ${Object.entries(BALANCE.techs).map(([id, t]) => {
+      ${Object.entries(branches).map(([br, title]) => `<h3>${title}</h3>` + techs.filter(([, t]) => t.branch === br).map(([id, t]) => {
         const done = me.researched.includes(id);
         const missing = t.requires.filter(r => !me.researched.includes(r) && !queue.includes(r));
+        const excluded = (t.excludes ?? []).filter(x => me.researched.includes(x) || queue.includes(x));
+        const opens = [...t.unlocksUnits.map(u => BALANCE.units[u].name), ...t.unlocksBuildings.map(x => BALANCE.buildings[x].name)];
         return `<div class="card"><b>${esc(t.name)}</b> · ${t.cost} ✦ ${done ? '✓' : ''}
-          <div class="muted">${t.unlocksUnits.map(u => 'Открывает: ' + BALANCE.units[u].name).join(', ')}${t.modifiers.attackBonus ? `Атака +${t.modifiers.attackBonus}` : ''}${t.modifiers.cityDefenseBonus ? `Защита городов +${t.modifiers.cityDefenseBonus}` : ''}
-          ${missing.length ? `<br>Требуется: ${missing.map(r => BALANCE.techs[r].name).join(', ')}` : ''}</div>
-          ${!done && !queue.includes(id) && !missing.length ? `<button data-t="${id}">В очередь</button>` : ''}</div>`;
-      }).join('')}
+          <div class="muted">${opens.length ? 'Открывает: ' + opens.join(', ') + '. ' : ''}${Object.keys(t.modifiers).length ? 'Эффект: ' + esc(JSON.stringify(t.modifiers)) : ''}
+          ${missing.length ? `<br>Требуется: ${missing.map(r => BALANCE.techs[r].name).join(', ')}` : ''}${excluded.length ? `<br>Недоступно: выбрано «${excluded.map(x => BALANCE.techs[x].name).join(', ')}»` : ''}${t.excludes?.length && !excluded.length ? `<br>Взаимоисключает: ${t.excludes.map(x => BALANCE.techs[x].name).join(', ')}` : ''}</div>
+          ${!done && !queue.includes(id) && !missing.length && !excluded.length ? `<button data-t="${id}">В очередь</button>` : ''}</div>`;
+      }).join('')).join('')}
       ${queue.length ? '<button id="rClear">Очистить очередь</button>' : ''}</div>`;
-    el.querySelectorAll<HTMLButtonElement>('[data-t]').forEach(b => (b.onclick = () => submit(client.research([...queue, b.dataset.t!]))));
+    el.querySelectorAll<HTMLButtonElement>('[data-t]').forEach(bt => (bt.onclick = () => submit(client.research([...queue, bt.dataset.t!]))));
     const c = document.getElementById('rClear');
     if (c) c.onclick = () => submit(client.research([]));
+  } else if (sheet === 'commander') {
+    const cs = me.commander;
+    const fac = BALANCE.factions[me.faction];
+    const cmd = st.view.units.find(x => x.id === cs.unitId);
+    el.innerHTML = `<div class="sheet"><h3>${esc(fac.commander.name)} · ${esc(fac.name)}</h3>
+      <div class="muted">${esc(fac.mechanic)}<br>Слабость: ${esc(fac.weakness)}</div>
+      <div>Очки командования: ${cs.points}/${BALANCE.commander.maxPoints}${cmd ? ` · ❤ ${cmd.hp}/${cmd.maxHp}` : ` · пал, вернётся с хода ${cs.respawnTurn} (${BALANCE.commander.respawnGold}◉)`}</div>
+      <div class="row">${fac.commander.abilities.map(a => {
+        const ab = BALANCE.commander.abilities[a];
+        const cd = (cs.cooldowns[a] ?? 0) > st.view.turn;
+        return `<button data-ab="${a}" ${!cmd || cd || cs.points < ab.cost ? 'disabled' : ''} title="${esc(ab.description)}">${esc(ab.name)} · ${ab.cost} очк.${cd ? ` (до хода ${cs.cooldowns[a]})` : ''}</button>`;
+      }).join('')}</div>
+      <div>Направления: ${Object.entries(BALANCE.commander.directions).map(([d, x]) => `${esc(x.name)} ${cs.directions[d] ?? 0}`).join(' · ')}</div>
+      ${cs.pendingChoices > 0 ? `<div class="row">Выберите направление: ${Object.entries(BALANCE.commander.directions).map(([d, x]) => `<button data-dir="${d}" title="${esc(x.description)}">${esc(x.name)}</button>`).join('')}</div>` : ''}
+      ${cmd ? '<button id="cmdFocus">К командиру</button>' : ''}</div>`;
+    el.querySelectorAll<HTMLButtonElement>('[data-ab]').forEach(bt => (bt.onclick = async () => {
+      if (bt.dataset.ab === 'scout_pulse') {
+        pulseMode = true;
+        toast('Нажмите клетку для разведывательного импульса');
+        sheet = 'none';
+        renderSheet();
+        return;
+      }
+      await submit(client.commanderAbility(bt.dataset.ab!));
+    }));
+    el.querySelectorAll<HTMLButtonElement>('[data-dir]').forEach(bt => (bt.onclick = () => submit(client.commanderDirection(bt.dataset.dir!))));
+    const f = document.getElementById('cmdFocus');
+    if (f && cmd) f.onclick = () => select(cmd.id, true);
   } else if (sheet === 'log') {
     el.innerHTML = `<div class="sheet"><h3>Журнал событий</h3><div class="log">${logLines.slice(-80).reverse().map(esc).join('<br>') || 'Пусто'}</div></div>`;
   } else el.innerHTML = '';
@@ -325,7 +407,8 @@ function renderSheet() {
 
 function describeOrder(o: any): string {
   if (o.mode === 'hold') return 'удержание (укрепление)';
-  if (o.mode === 'build') return 'строительство дороги';
+  if (o.mode === 'build') return o.build === 'fort' ? 'строительство укрепления' : o.build === 'forest' ? 'посадка леса' : 'строительство дороги';
+  if (o.ability === 'knockback') return 'удар щитом';
   if (o.longRoute) return `маршрут (${o.path.length} шаг.)`;
   if (o.mode === 'move') return `движение (${o.path.length} шаг.)`;
   return `атака${o.path.length ? ` после ${o.path.length} шаг.` : ''}`;
@@ -440,6 +523,15 @@ function frame(now: number) {
     const { sx, sy } = tileToScreen(x, y);
     ctx.fillStyle = TERRAIN_COLORS[t?.terrain ?? 255];
     ctx.fillRect(sx - S / 2, sy - S / 2, S - 1, S - 1);
+    if (supplyLayer && t && (client.chunk(Math.floor(x / st.view.map.chunkSize), Math.floor(y / st.view.map.chunkSize))?.supply ?? [])[(y % st.view.map.chunkSize) * st.view.map.chunkSize + (x % st.view.map.chunkSize)]) {
+      ctx.fillStyle = '#5fbf7a55';
+      ctx.fillRect(sx - S / 2, sy - S / 2, S - 1, S - 1);
+    }
+    if (t && t.features & 128 && S > 12) {
+      ctx.strokeStyle = '#ddd';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(sx - S / 3, sy - S / 3, (S * 2) / 3, (S * 2) / 3);
+    }
     if (t && t.terrain !== 255 && !t.visible) {
       ctx.fillStyle = '#0008';
       ctx.fillRect(sx - S / 2, sy - S / 2, S - 1, S - 1);
@@ -610,6 +702,10 @@ async function select(id: string | null, center = false) {
 async function tap(t: Coord) {
   const st = client.state!;
   if (st.match.phase !== 'planning' || (player && !player.done)) return;
+  if (pulseMode) {
+    pulseMode = false;
+    return submit(client.commanderAbility('scout_pulse', t));
+  }
   const here = st.view.units.find(u => u.x === t.x && u.y === t.y);
   const sel = selected ? st.view.units.find(u => u.id === selected && u.owner === st.view.me.id) : null;
   if (here && here.owner === st.view.me.id) return select(here.id);
@@ -628,7 +724,7 @@ async function tap(t: Coord) {
     const pv = await client.previewAttack(sel.id, here.id, path);
     if (!pv.ok) return toast(REASONS[pv.reason ?? ''] ?? pv.reason ?? '');
     const ok = confirm(`Атака: урон ${pv.damage}${pv.counterPossible ? `, ответный удар ${pv.counter}` : ', без ответа'}\nМодификаторы: ${(pv.modifiers ?? []).map(m => `${m.id} ×${m.value}`).join(', ') || 'нет'}\n\n${pv.warning}`);
-    if (ok) await submit(client.attack(sel.id, here.id, path));
+    if (ok) await submit(bashMode && BALANCE.units[sel.type].abilities.includes('knockback') ? client.shieldBash(sel.id, here.id, path) : client.attack(sel.id, here.id, path));
     return;
   }
   if (sel && moveTiles.some(m => m.x === t.x && m.y === t.y)) {
@@ -690,6 +786,18 @@ function logEvents(events: StoredEvent[], turn?: number) {
       e.t === 'attack_failed' ? `Атака не состоялась (${e.reason})` :
       e.t === 'order_rejected' ? `Приказ отклонён (${REASONS[e.reason] ?? e.reason})` :
       e.t === 'road_built' ? `Построена дорога (${e.at.x},${e.at.y})` :
+      e.t === 'fort_built' ? `Построено укрепление (${e.at.x},${e.at.y})` :
+      e.t === 'forest_planted' ? `Высажен лес (${e.at.x},${e.at.y})` :
+      e.t === 'zoc_stop' ? 'Отряд остановлен зоной контроля противника' :
+      e.t === 'suppressed' ? 'Отряд подавлен' :
+      e.t === 'knockback' ? 'Отталкивание' :
+      e.t === 'promotion_available' ? 'Новый ранг: выберите улучшение' :
+      e.t === 'building_completed' ? `Построено: ${BALANCE.buildings[e.building].name}` :
+      e.t === 'city_grew' ? `Город вырос до уровня ${e.level}` :
+      e.t === 'supply_warning' ? (e.level === 'low' ? 'Отряд вне снабжения' : 'Отряд без снабжения: штраф') :
+      e.t === 'commander_ability' ? `Командир: ${BALANCE.commander.abilities[e.ability].name}` :
+      e.t === 'commander_fallen' ? `Командир пал, вернётся с хода ${e.respawnTurn}` :
+      e.t === 'commander_respawned' ? 'Командир вернулся' :
       e.t === 'route_paused' ? `Маршрут остановлен (${e.reason === 'threat' ? 'угроза рядом' : e.reason === 'blocked' ? 'путь перекрыт' : 'путь недоступен'})` :
       e.t === 'route_completed' ? 'Маршрут завершён' :
       e.t === 'build_failed' ? `Строительство сорвано (${e.reason})` :

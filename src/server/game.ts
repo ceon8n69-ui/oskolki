@@ -3,11 +3,11 @@ import { randomBytes, randomUUID } from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import type { Balance } from '../shared/balance.ts';
 import type { MatchInfo, OrderRecord, StateResponse, SubmitOrderRequest, SubmitOrderResponse } from '../shared/protocol.ts';
-import type { GameState, Order, StoredEvent, SubmittedOrder } from '../shared/types.ts';
+import type { BuildKind, GameState, Order, StoredEvent, SubmittedOrder } from '../shared/types.ts';
 import { orderSubjectKey } from '../shared/types.ts';
 import { botOrders } from '../ai/simple.ts';
 import { RULES_VERSION, resolveTurn } from '../engine/resolve.ts';
-import { reservedGold, validateOrder } from '../engine/validate.ts';
+import { reservedResources, validateOrder } from '../engine/validate.ts';
 import { computeVision } from '../engine/vision.ts';
 import { playerView } from '../engine/view.ts';
 import { GENERATOR_VERSION } from '../worldgen/generate.ts';
@@ -46,7 +46,7 @@ export class GameService extends EventEmitter {
 
   // ---------------- Лобби ----------------
 
-  async createMatch(userId: number, preset: string, displayName: string): Promise<MatchInfo> {
+  async createMatch(userId: number, preset: string, displayName: string, faction = 'union'): Promise<MatchInfo> {
     const tp = this.b.turnPresets[preset];
     if (!tp) throw new GameError('unknown_preset');
     const mp = this.b.map.presets[tp.mapPreset];
@@ -59,26 +59,45 @@ export class GameService extends EventEmitter {
          VALUES ($1,$2,'lobby',0,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
         [id, preset, randomBytes(8).toString('hex'), this.b.version, RULES_VERSION, mp.width, mp.height, this.b.map.chunkSize, tp.planningSeconds, maxPlayers, invite, userId],
       );
-      await this.addPlayer(tx, id, userId, displayName, false);
-      if (preset === 'vsbot') await this.addPlayer(tx, id, null, 'Бот', true);
+      await this.addPlayer(tx, id, userId, displayName, false, faction);
+      if (preset === 'vsbot') {
+        // Бот берёт другой народ, чтобы партия проверяла их различия.
+        const others = Object.keys(this.b.factions).filter(f => f !== faction);
+        await this.addPlayer(tx, id, null, 'Бот', true, others[parseInt(id.slice(0, 2), 16) % others.length]);
+      }
       await this.log(tx, id, `user:${userId}`, 'match_created', { preset });
     });
     if (preset === 'vsbot') await this.startMatch(id);
     return this.matchInfo(id);
   }
 
-  private async addPlayer(tx: Tx, matchId: string, userId: number | null, name: string, isBot: boolean): Promise<string> {
+  private async addPlayer(tx: Tx, matchId: string, userId: number | null, name: string, isBot: boolean, faction = 'union'): Promise<string> {
+    if (!this.b.factions[faction]) throw new GameError('unknown_faction');
     const { rows } = await tx.query('SELECT count(*)::int AS n FROM players WHERE match_id=$1', [matchId]);
     const seat = rows[0].n;
     const pid = `p${seat + 1}`;
     await tx.query(
-      `INSERT INTO players (match_id, id, user_id, name, faction, color, is_bot, seat, gold) VALUES ($1,$2,$3,$4,'union','#888',$5,$6,$7)`,
-      [matchId, pid, userId, name.slice(0, 32), isBot, seat, this.b.economy.startGold],
+      `INSERT INTO players (match_id, id, user_id, name, faction, color, is_bot, seat, gold) VALUES ($1,$2,$3,$4,$8,'#888',$5,$6,$7)`,
+      [matchId, pid, userId, name.slice(0, 32), isBot, seat, this.b.economy.startGold, faction],
     );
     return pid;
   }
 
-  async joinByInvite(userId: number, inviteCode: string, displayName: string): Promise<MatchInfo> {
+  /** Смена народа в лобби (до старта партии). */
+  async setFaction(matchId: string, userId: number, faction: string): Promise<MatchInfo> {
+    if (!this.b.factions[faction]) throw new GameError('unknown_faction');
+    await withTx(this.db, async tx => {
+      const { rows: [m] } = await tx.query('SELECT phase FROM matches WHERE id=$1 FOR UPDATE', [matchId]);
+      if (!m) throw new GameError('match_not_found', 404);
+      if (m.phase !== 'lobby') throw new GameError('match_already_started', 409);
+      const r = await tx.query('UPDATE players SET faction=$3 WHERE match_id=$1 AND user_id=$2', [matchId, userId, faction]);
+      if (!r.rowCount) throw new GameError('not_in_match', 403);
+    });
+    this.emit('match_changed', matchId);
+    return this.matchInfo(matchId);
+  }
+
+  async joinByInvite(userId: number, inviteCode: string, displayName: string, faction = 'union'): Promise<MatchInfo> {
     const matchId = await withTx(this.db, async tx => {
       const { rows: [m] } = await tx.query('SELECT * FROM matches WHERE invite_code=$1 FOR UPDATE', [inviteCode]);
       if (!m) throw new GameError('invite_not_found', 404);
@@ -87,7 +106,7 @@ export class GameService extends EventEmitter {
       if (m.phase !== 'lobby') throw new GameError('match_already_started', 409);
       const { rows: [{ n }] } = await tx.query('SELECT count(*)::int AS n FROM players WHERE match_id=$1', [m.id]);
       if (n >= m.max_players) throw new GameError('match_full', 409);
-      await this.addPlayer(tx, m.id, userId, displayName, false);
+      await this.addPlayer(tx, m.id, userId, displayName, false, faction);
       await this.log(tx, m.id, `user:${userId}`, 'joined', {});
       return m.id as string;
     });
@@ -182,7 +201,7 @@ export class GameService extends EventEmitter {
       match,
       view: playerView(this.b, state, playerId),
       orders: orders.map(({ playerId: _p, ...o }) => o),
-      reserved: { gold: reservedGold(this.b, orders.map(o => o.order)) },
+      reserved: reservedResources(this.b, state, playerId, orders.map(o => o.order)),
     };
   }
 
@@ -231,7 +250,7 @@ export class GameService extends EventEmitter {
       );
       await tx.query('UPDATE players SET ready=false WHERE match_id=$1 AND id=$2', [matchId, playerId]);
       await this.log(tx, matchId, playerId, 'order', { subject, version: rec.version });
-      return { ok: true, order: rec, reserved: { gold: reservedGold(this.b, [...others, order]) } };
+      return { ok: true, order: rec, reserved: reservedResources(this.b, state, playerId, [...others, order]) };
     });
   }
 
@@ -297,7 +316,7 @@ export class GameService extends EventEmitter {
       }
       const { state: next, events } = resolveTurn(this.b, state, orders);
       await saveState(tx, next);
-      const roads = events.flatMap(e => (e.event.t === 'road_built' ? [e.event.at] : []));
+      const roads = events.flatMap(e => (e.event.t === 'road_built' || e.event.t === 'fort_built' || e.event.t === 'forest_planted' ? [e.event.at] : []));
       if (roads.length) await saveTileChanges(tx, matchId, next.map, roads, m.turn);
       resolvedState = next;
       if (events.length) {
@@ -369,12 +388,27 @@ export function sanitizeOrder(o: any): Order {
         ...(o.targetUnitId ? { targetUnitId: String(o.targetUnitId) } : {}),
         ...(o.targetTile ? { targetTile: coord(o.targetTile) } : {}),
         ...(o.longRoute === true ? { longRoute: true, stopOnThreat: o.stopOnThreat !== false } : {}),
-        ...(o.mode === 'build' ? { build: o.build === 'road' ? 'road' : (String(o.build) as 'road') } : {}),
+        ...(o.mode === 'build' ? { build: String(o.build ?? 'road') as BuildKind } : {}),
+        ...(o.ability === 'knockback' ? { ability: 'knockback' as const } : {}),
       };
     case 'recruit':
       return { kind: 'recruit', cityId: String(o.cityId ?? ''), unitType: String(o.unitType ?? '') };
     case 'research':
       return { kind: 'research', queue: Array.isArray(o.queue) ? o.queue.slice(0, 16).map(String) : [] };
+    case 'construct':
+      return { kind: 'construct', cityId: String(o.cityId ?? ''), building: String(o.building ?? '') };
+    case 'specialize':
+      return { kind: 'specialize', cityId: String(o.cityId ?? ''), specialization: String(o.specialization ?? '') };
+    case 'promote':
+      return { kind: 'promote', unitId: String(o.unitId ?? ''), perk: String(o.perk ?? '') };
+    case 'commander':
+      return {
+        kind: 'commander',
+        action: o.action === 'direction' ? 'direction' : 'ability',
+        ...(o.ability ? { ability: String(o.ability) } : {}),
+        ...(o.direction ? { direction: String(o.direction) } : {}),
+        ...(o.target ? { target: coord(o.target) } : {}),
+      };
     default:
       throw new GameError('bad_order');
   }

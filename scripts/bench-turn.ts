@@ -1,5 +1,6 @@
 // Нагрузочная проверка расчёта хода: npm run bench -- --preset world256 --units 2000
 import { BALANCE } from '../src/shared/balance.ts';
+import { newUnit } from '../src/engine/factory.ts';
 import type { SubmittedOrder } from '../src/shared/types.ts';
 import { botOrders } from '../src/ai/simple.ts';
 import { resolveTurn } from '../src/engine/resolve.ts';
@@ -31,7 +32,7 @@ while (state.units.filter(u => u.owner !== 'neutral').length < targetUnits && gu
   if (!isLandPassable(BALANCE, state.map, x, y) || taken.has(`${x},${y}`)) continue;
   taken.add(`${x},${y}`);
   const type = ['infantry', 'scout', 'infantry', 'infantry'][Math.floor(rng() * 4)];
-  state.units.push({ id: `u${state.nextIds.unit++}`, owner: p.id, type, x, y, hp: BALANCE.units[type].hp, xp: 0, rank: 0, statuses: [], countersUsed: 0, createdTurn: 1 });
+  state.units.push(newUnit(BALANCE, state, { id: `u${state.nextIds.unit++}`, owner: p.id, type, x, y, createdTurn: 1 }));
 }
 console.log(`игроков ${state.players.length}, отрядов ${state.units.length} (нейтральных ${state.units.filter(u => u.owner === 'neutral').length})`);
 

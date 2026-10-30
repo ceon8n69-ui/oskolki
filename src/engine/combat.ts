@@ -1,8 +1,13 @@
 // Формула боя. Единственное место, где считается урон: сервер и предпросмотр используют её же.
+// Каждый множитель попадает в список modifiers с идентификатором из balance.effects / причиной —
+// игрок видит все существенные бонусы в прогнозе, ничего не спрятано в описаниях технологий.
 import type { Balance } from '../shared/balance.ts';
-import { terrainRule } from '../shared/balance.ts';
-import type { GameState, PlayerId, UnitState } from '../shared/types.ts';
-import { dist, terrainAt } from './grid.ts';
+import { hasAbility, terrainRule } from '../shared/balance.ts';
+import type { GameState, UnitState } from '../shared/types.ts';
+import { Feature, NEUTRAL, Terrain } from '../shared/types.ts';
+import { dist, featuresAt, idx, terrainAt } from './grid.ts';
+import { cityBuildingEffect } from './supply.ts';
+import { commanderAura, rangeOf, techs, traitsOf, unitClass, waterDistance } from './stats.ts';
 
 export interface Modifier {
   id: string;
@@ -15,61 +20,110 @@ export interface DamageResult {
   counter: number; // возможная контратака (если цель выживет и достаёт атакующего)
   counterPossible: boolean;
   modifiers: Modifier[];
+  counterModifiers: Modifier[];
   attackForce: number;
   defenseForce: number;
 }
 
-function techModifiers(b: Balance, state: GameState, owner: PlayerId) {
-  const p = state.players.find(pl => pl.id === owner);
-  let attackBonus = 0;
-  let cityDefenseBonus = 0;
-  if (p) {
-    for (const t of p.researched) {
-      attackBonus += b.techs[t]?.modifiers.attackBonus ?? 0;
-      cityDefenseBonus += b.techs[t]?.modifiers.cityDefenseBonus ?? 0;
-    }
-  }
-  return { attackBonus, cityDefenseBonus };
+/** Обстоятельства хода, которых нет в состоянии: кто был замечен в начале хода, действующие способности командиров. */
+export interface CombatContext {
+  /** Видел ли владелец цели атакующего в начале хода (для засады). */
+  seenAtStart?: (attacker: UnitState, targetOwner: string) => boolean;
+  siegeSupport?: Set<string>;
 }
 
-export function maxHp(b: Balance, u: Pick<UnitState, 'type' | 'rank'>): number {
-  return b.units[u.type].hp + (b.ranks.hpBonus[u.rank] ?? 0);
+export function maxHp(_b: Balance, u: Pick<UnitState, 'maxHp'>): number {
+  return u.maxHp;
 }
 
 export function hasStatus(u: UnitState, id: string): boolean {
   return u.statuses.some(s => s.id === id);
 }
 
-export function attackValue(b: Balance, state: GameState, u: UnitState, target: UnitState, mods: Modifier[]): number {
+function friendsAdjacent(state: GameState, u: UnitState): UnitState[] {
+  return state.units.filter(o => o !== u && o.owner === u.owner && o.hp > 0 && dist(o, u) === 1);
+}
+
+function cityAt(state: GameState, x: number, y: number) {
+  return state.cities.find(c => c.x === x && c.y === y);
+}
+
+function classMatches(b: Balance, perk: string, targetType: string): boolean {
+  const cls = unitClass(b, targetType);
+  if (perk === 'vs_cavalry') return cls === 'cavalry';
+  if (perk === 'vs_infantry') return cls === 'infantry' || cls === 'shield' || cls === 'spear';
+  if (perk === 'vs_ranged') return cls === 'ranged' || cls === 'siege';
+  return false;
+}
+
+export function attackValue(b: Balance, state: GameState, u: UnitState, target: UnitState, mods: Modifier[], ctx: CombatContext = {}): number {
   const rule = b.units[u.type];
-  let a = rule.attack + techModifiers(b, state, u.owner).attackBonus;
-  const rankMul = b.ranks.attackMultiplier[u.rank] ?? 1;
-  if (rankMul !== 1) mods.push({ id: `rank_${u.rank}`, value: rankMul, side: 'attack' });
-  a *= rankMul;
-  const vs = rule.bonusVs?.[target.type];
-  if (vs) {
-    mods.push({ id: `bonus_vs_${target.type}`, value: vs, side: 'attack' });
-    a *= vs;
+  const tc = techs(b, state, u.owner);
+  const tr = traitsOf(b, state, u.owner);
+  let a = rule.attack + tc.attackBonus + (tc.attackBonusClass[rule.class] ?? 0);
+  const push = (id: string, v: number) => {
+    if (v === 1) return;
+    mods.push({ id, value: v, side: 'attack' });
+    a *= v;
+  };
+  push(`rank_${u.rank}`, b.ranks.attackMultiplier[u.rank] ?? 1);
+  const vs = rule.bonusVs?.[target.type] ?? rule.bonusVs?.[unitClass(b, target.type)];
+  if (vs) push(`bonus_vs_${unitClass(b, target.type)}`, vs);
+  for (const perk of u.perks ?? []) if (classMatches(b, perk, target.type)) push(`perk_${perk}`, 1.15);
+  // Высота: атакующий выше цели.
+  const hA = terrainRule(b, terrainAt(state.map, u.x, u.y)).height;
+  const hT = terrainRule(b, terrainAt(state.map, target.x, target.y)).height;
+  if (hA > hT && hT > 0) push('high_ground', b.combat.highGroundAttack);
+  // Цель в городе: осадные бьют сильнее, Лесные хранители — слабее.
+  const targetInCity = !!cityAt(state, target.x, target.y);
+  if (targetInCity && hasAbility(b, u.type, 'siege')) push('siege_vs_city', b.combat.siegeVsCity);
+  if (targetInCity && tr.vsCityMul) push('forest_vs_city', tr.vsCityMul);
+  if (targetInCity && ctx.siegeSupport?.has(u.id)) push('siege_support', 1.25);
+  // Засада: из леса, по противнику, который не видел атакующего в начале хода.
+  if (tr.ambushMul && terrainAt(state.map, u.x, u.y) === Terrain.Forest && ctx.seenAtStart && !ctx.seenAtStart(u, target.owner)) {
+    push('ambush', tr.ambushMul + tc.ambushBonus);
   }
+  // Народ Приливов: у воды сильнее, вдали — слабее.
+  if (tr.coastAttackMul || tr.inlandAttackMul) {
+    const wd = waterDistance(state.map)[idx(state.map, u.x, u.y)];
+    if (wd <= 1 && tr.coastAttackMul) push('coast', tr.coastAttackMul);
+    else if (tr.inlandAttackMul && wd > (tr.inlandDistance ?? 3)) push('inland', tr.inlandAttackMul);
+  }
+  // Поддержка соседей и командира.
+  if (friendsAdjacent(state, u).some(f => hasAbility(b, f.type, 'inspire'))) push('inspire', 1.1);
+  const tac = commanderAura(b, state, u.owner, u, 'tactics');
+  if (tac) push('tactics', 1 + 0.1 * tac);
+  // Состояния.
+  if (hasStatus(u, 'suppressed') && !u.perks?.includes('suppress_resist')) push('suppressed', b.combat.suppressedAttack);
+  if (hasStatus(u, 'unsupplied')) push('unsupplied', b.combat.unsuppliedMultiplier);
   return a;
 }
 
 export function defenseValue(b: Balance, state: GameState, u: UnitState, mods: Modifier[]): number {
   const rule = b.units[u.type];
   let d = rule.defense;
-  const terr = terrainRule(b, terrainAt(state.map, u.x, u.y)).defense;
-  if (terr !== 1) mods.push({ id: 'terrain', value: terr, side: 'defense' });
-  d *= terr;
+  const push = (id: string, v: number) => {
+    if (v === 1) return;
+    mods.push({ id, value: v, side: 'defense' });
+    d *= v;
+  };
+  push('terrain', terrainRule(b, terrainAt(state.map, u.x, u.y)).defense);
   const city = state.cities.find(c => c.x === u.x && c.y === u.y && c.owner === u.owner);
   if (city) {
-    const v = b.combat.cityDefense + techModifiers(b, state, u.owner).cityDefenseBonus;
-    mods.push({ id: 'city', value: v, side: 'defense' });
-    d *= v;
+    let v = b.combat.cityDefense + techs(b, state, u.owner).cityDefenseBonus + cityBuildingEffect(b, city, 'cityDefense');
+    if (city.specialization) v += b.specializations[city.specialization]?.effects.cityDefense ?? 0;
+    push('city', v);
   }
+  if (u.owner !== NEUTRAL && featuresAt(state.map, u.x, u.y) & Feature.Fort) push('fort', b.forts.defenseMul + techs(b, state, u.owner).fortBonus);
   if (hasStatus(u, 'fortified')) {
-    mods.push({ id: 'fortified', value: b.combat.fortifyDefense, side: 'defense' });
-    d *= b.combat.fortifyDefense;
+    push('fortified', b.combat.fortifyDefense);
+    if (u.perks?.includes('hold_defense')) push('perk_hold_defense', 1.15);
   }
+  const friends = friendsAdjacent(state, u);
+  if (friends.some(f => hasAbility(b, f.type, 'cover'))) push('cover', b.combat.coverDefense);
+  const fm = traitsOf(b, state, u.owner).formation;
+  if (fm && friends.length >= fm.minAllies) push('formation', fm.defenseMul + techs(b, state, u.owner).formationBonus);
+  if (hasStatus(u, 'unsupplied')) push('unsupplied', b.combat.unsuppliedMultiplier);
   return d;
 }
 
@@ -84,18 +138,19 @@ export function computeDamage(
   defender: UnitState,
   attackerHp = attacker.hp,
   defenderHp = defender.hp,
+  ctx: CombatContext = {},
 ): DamageResult {
   const modifiers: Modifier[] = [];
-  const atk = attackValue(b, state, attacker, defender, modifiers);
+  const atk = attackValue(b, state, attacker, defender, modifiers, ctx);
   const def = defenseValue(b, state, defender, modifiers);
-  const attackForce = atk * (attackerHp / maxHp(b, attacker));
-  const defenseForce = def * (defenderHp / maxHp(b, defender));
+  const attackForce = atk * (attackerHp / attacker.maxHp);
+  const defenseForce = def * (defenderHp / defender.maxHp);
   const total = attackForce + defenseForce;
   const k = b.combat.damageScale;
   const damage = total <= 0 ? 0 : Math.max(b.combat.minDamage, Math.round((attackForce / total) * atk * k));
   const counter = total <= 0 ? 0 : Math.round((defenseForce / total) * def * k);
-  const counterPossible = dist(attacker, defender) <= b.units[defender.type].range && counter > 0;
-  return { damage, counter, counterPossible, modifiers, attackForce, defenseForce };
+  const counterPossible = dist(attacker, defender) <= rangeOf(b, state, defender) && counter > 0;
+  return { damage, counter, counterPossible, modifiers, counterModifiers: modifiers.filter(m => m.side === 'defense'), attackForce, defenseForce };
 }
 
 export function rankForXp(b: Balance, xp: number): number {
