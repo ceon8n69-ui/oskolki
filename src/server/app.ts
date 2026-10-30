@@ -84,10 +84,25 @@ export async function buildApp(deps: { cfg: ServerConfig; db: Db; game: GameServ
   // ---------- партии ----------
   app.get('/api/matches', async req => ({ matches: await game.listMatches(auth(req)) }));
 
-  app.post('/api/matches', async (req: FastifyRequest<{ Body: { preset?: string; faction?: string } }>) => {
+  app.post('/api/matches', async (req: FastifyRequest<{ Body: { preset?: string; faction?: string; victory?: string; turnLimit?: number | null; alliances?: boolean } }>) => {
     const uid = auth(req);
-    return game.createMatch(uid, String(req.body?.preset ?? 'quick'), await displayName(uid), String(req.body?.faction ?? 'union'));
+    const body = req.body ?? {};
+    return game.createMatch(uid, String(body.preset ?? 'quick'), await displayName(uid), String(body.faction ?? 'union'), {
+      ...(body.victory ? { victory: String(body.victory) as 'influence' } : {}),
+      ...(body.turnLimit !== undefined ? { turnLimit: body.turnLimit === null ? null : Number(body.turnLimit) } : {}),
+      ...(typeof body.alliances === 'boolean' ? { alliances: body.alliances } : {}),
+    });
   });
+
+  app.post('/api/matches/:id/bots', async (req: FastifyRequest<{ Params: { id: string }; Body: { count?: number } }>) =>
+    game.addBots(req.params.id, auth(req), Number(req.body?.count ?? 1)),
+  );
+
+  app.get('/api/matches/:id/markers', async (req: FastifyRequest<{ Params: { id: string } }>) => ({ markers: await game.listMarkers(req.params.id, auth(req)) }));
+  app.post('/api/matches/:id/markers', async (req: FastifyRequest<{ Params: { id: string }; Body: any }>) => ({ markers: await game.addMarker(req.params.id, auth(req), (req.body ?? {}) as any) }));
+  app.delete('/api/matches/:id/markers/:markerId', async (req: FastifyRequest<{ Params: { id: string; markerId: string } }>) =>
+    ({ markers: await game.deleteMarker(req.params.id, auth(req), Number(req.params.markerId)) }),
+  );
 
   app.post('/api/matches/:id/faction', async (req: FastifyRequest<{ Params: { id: string }; Body: { faction?: string } }>) =>
     game.setFaction(req.params.id, auth(req), String(req.body?.faction ?? '')),

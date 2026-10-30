@@ -211,11 +211,8 @@ async function assertReplayable(matchId: string, turn: number) {
   const live = await loadState(db, matchId);
   const snap = stateFromJson(t.snapshot, live.map);
   const { rows: ords } = await db.query(`SELECT id, player_id, payload FROM orders WHERE match_id=$1 AND turn=$2 AND status='consumed' ORDER BY player_id, id`, [matchId, turn]);
-  const { botOrders } = await import('../../src/ai/simple.ts');
+  // Приказы ботов хранятся в журнале наравне с приказами людей — ИИ при воспроизведении не нужен.
   const orders = ords.map(o => ({ id: o.id, playerId: o.player_id, order: o.payload }));
-  for (const p of snap.players.filter(p => p.isBot && !p.eliminated)) {
-    botOrders(BALANCE, snap, p.id).forEach((order, i) => orders.push({ id: `bot-${turn}-${p.id}-${String(i).padStart(3, '0')}`, playerId: p.id, order }));
-  }
   const { state } = resolveTurn(BALANCE, snap, orders);
   assert.equal(stateHash(state), t.result_hash, `ход ${turn} не воспроизводится`);
 }
@@ -330,4 +327,76 @@ test('этап 3: выбор народа в лобби, постройка и �
   for (let t = 1; t <= 10; t++) await assertReplayable(vb.id, t);
   const { rows } = await db.query(`SELECT count(*)::int n FROM turn_events WHERE match_id=$1 AND event->>'t' = 'order_rejected'`, [vb.id]);
   assert.equal(rows[0].n, 0, 'бот не отдаёт недопустимых приказов');
+});
+
+test('этап 4: режим партии, боты в лобби, дипломатия, общие метки, замещение ботом и возврат', async () => {
+  const t1 = await devLogin('Лев');
+  const t2 = await devLogin('Мила');
+  assert.equal((await call('POST', '/api/matches', t1, { preset: 'async', victory: 'influence', turnLimit: null })).json.error, 'influence_needs_turn_limit');
+  const m = (await call('POST', '/api/matches', t1, { preset: 'async', faction: 'union', victory: 'influence', turnLimit: 12, alliances: true })).json;
+  assert.equal(m.victory, 'influence');
+  assert.equal(m.turnLimit, 12);
+  await call('POST', '/api/matches/join', t2, { inviteCode: m.inviteCode, faction: 'forest' });
+  assert.equal((await call('POST', `/api/matches/${m.id}/bots`, t2, { count: 1 })).status, 403);
+  const withBot = (await call('POST', `/api/matches/${m.id}/bots`, t1, { count: 1 })).json;
+  assert.equal(withBot.players.length, 3);
+  assert.equal((await call('POST', `/api/matches/${m.id}/start`, t1)).json.phase, 'planning');
+  const s1 = (await call<StateResponse>('GET', `/api/matches/${m.id}/state`, t1)).json;
+  assert.ok(s1.view.mode.objectives.length >= BALANCE.influence.minObjectives, 'цели влияния объявлены');
+  const p1 = s1.view.me.id;
+  const p2 = s1.view.players.find(p => p.name === 'Мила')!.id;
+
+  // Ход 1: p1 предлагает союз; p2 ничего не делает.
+  const prop = await call('POST', `/api/matches/${m.id}/orders`, t1, { turn: 1, order: { kind: 'diplomacy', action: 'propose', target: p2, status: 'alliance' }, idempotencyKey: randomUUID() });
+  assert.equal(prop.json.ok, true, JSON.stringify(prop.json));
+  await call('POST', `/api/matches/${m.id}/ready`, t1, { turn: 1, ready: true });
+  assert.ok(await game.processTurn(m.id, 1));
+  // Ход 2: p2 принимает.
+  const acc = await call('POST', `/api/matches/${m.id}/orders`, t2, { turn: 2, order: { kind: 'diplomacy', action: 'accept', target: p1 }, idempotencyKey: randomUUID() });
+  assert.equal(acc.json.ok, true, JSON.stringify(acc.json));
+  await call('POST', `/api/matches/${m.id}/ready`, t1, { turn: 2, ready: true });
+  await call('POST', `/api/matches/${m.id}/ready`, t2, { turn: 2, ready: true });
+  assert.ok(await game.processTurn(m.id, 2));
+  const s3 = (await call<StateResponse>('GET', `/api/matches/${m.id}/state`, t2)).json;
+  assert.equal(s3.view.diplomacy.find(t => [t.a, t.b].includes(p1) && [t.a, t.b].includes(p2))?.status, 'alliance');
+
+  // Общие метки видны союзнику, личные — нет.
+  await call('POST', `/api/matches/${m.id}/markers`, t1, { x: 3, y: 3, label: 'Сбор здесь', shared: true });
+  await call('POST', `/api/matches/${m.id}/markers`, t1, { x: 4, y: 4, label: 'Только мне', shared: false });
+  const mk2 = (await call('GET', `/api/matches/${m.id}/markers`, t2)).json.markers;
+  assert.deepEqual(mk2.map((x: any) => x.label), ['Сбор здесь']);
+
+  // p2 пропускает ходы → управление у бота (порог для async — 3 хода подряд; ход 2 был с приказом).
+  for (const turn of [3, 4, 5]) {
+    await call('POST', `/api/matches/${m.id}/ready`, t1, { turn, ready: true });
+    assert.ok(await game.processTurn(m.id, turn));
+  }
+  const info = (await call('GET', `/api/matches/${m.id}`, t1)).json;
+  const p2info = info.players.find((p: any) => p.id === p2);
+  assert.equal(p2info.isBot, true);
+  assert.equal(p2info.replacedByBot, true);
+  const { rows: botOrders } = await db.query(`SELECT count(*)::int n FROM orders WHERE match_id=$1 AND turn=5 AND player_id=$2 AND idempotency_key LIKE 'bot-%'`, [m.id, p2]);
+  assert.ok(botOrders[0].n > 0, 'бот отдаёт приказы за отсутствующего игрока');
+  // Игрок вернулся — управление у него.
+  await call('POST', `/api/matches/${m.id}/ready`, t2, { turn: 6, ready: true });
+  const back = (await call('GET', `/api/matches/${m.id}`, t2)).json.players.find((p: any) => p.id === p2);
+  assert.equal(back.isBot, false);
+  for (let t = 1; t <= 5; t++) await assertReplayable(m.id, t);
+});
+
+test('этап 4: партия завершается по лимиту ходов с победителем по очкам влияния', async () => {
+  const t1 = await devLogin('Ника');
+  const m = (await call('POST', '/api/matches', t1, { preset: 'vsbot', victory: 'influence', turnLimit: 5 })).json;
+  assert.equal(m.phase, 'planning');
+  for (let turn = 1; turn <= 5; turn++) {
+    await call('POST', `/api/matches/${m.id}/ready`, t1, { turn, ready: true });
+    const r = await game.processTurn(m.id, turn);
+    assert.ok(r);
+    if (turn === 5) assert.equal(r!.finished, true);
+  }
+  const info = (await call('GET', `/api/matches/${m.id}`, t1)).json;
+  assert.equal(info.phase, 'finished');
+  assert.equal(info.winners.length, 1);
+  const { rows: [res] } = await db.query('SELECT result FROM matches WHERE id=$1', [m.id]);
+  assert.equal(res.result.reason, 'influence_turn_limit');
 });

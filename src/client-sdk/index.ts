@@ -83,8 +83,11 @@ export class OskolkiClient {
   listMatches() {
     return this.request<{ matches: MatchInfo[] }>('GET', '/api/matches').then(r => r.matches);
   }
-  createMatch(preset: 'quick' | 'async' | 'vsbot' | 'campaign', faction = 'union') {
-    return this.request<MatchInfo>('POST', '/api/matches', { preset, faction });
+  createMatch(preset: 'quick' | 'async' | 'vsbot' | 'campaign', faction = 'union', options: { victory?: string; turnLimit?: number | null; alliances?: boolean } = {}) {
+    return this.request<MatchInfo>('POST', '/api/matches', { preset, faction, ...options });
+  }
+  addBots(matchId: string, count: number) {
+    return this.request<MatchInfo>('POST', `/api/matches/${matchId}/bots`, { count });
   }
   setFaction(matchId: string, faction: string) {
     return this.request<MatchInfo>('POST', `/api/matches/${matchId}/faction`, { faction });
@@ -210,6 +213,19 @@ export class OskolkiClient {
   commanderAbility(ability: string, target?: Coord) {
     return this.submitOrder({ kind: 'commander', action: 'ability', ability, ...(target ? { target } : {}) });
   }
+  /** Дипломатия: propose (truce | alliance), accept, decline, break. Вступает в силу в конце хода. */
+  diplomacy(target: string, action: 'propose' | 'accept' | 'decline' | 'break', status?: 'truce' | 'alliance') {
+    return this.submitOrder({ kind: 'diplomacy', target, action, ...(status ? { status } : {}) });
+  }
+  markers() {
+    return this.request<{ markers: Marker[] }>('GET', `/api/matches/${this.matchId}/markers`).then(r => r.markers);
+  }
+  addMarker(x: number, y: number, label: string, shared = true) {
+    return this.request<{ markers: Marker[] }>('POST', `/api/matches/${this.matchId}/markers`, { x, y, label, shared }).then(r => r.markers);
+  }
+  deleteMarker(id: number) {
+    return this.request<{ markers: Marker[] }>('DELETE', `/api/matches/${this.matchId}/markers/${id}`).then(r => r.markers);
+  }
   commanderDirection(direction: string) {
     return this.submitOrder({ kind: 'commander', action: 'direction', direction });
   }
@@ -311,4 +327,14 @@ export interface ClientEvents {
   state: StateResponse;
   match: MatchInfo;
   turnResolved: { turn: number; events: StoredEvent[]; before: StateResponse | null; after: StateResponse };
+}
+
+export interface Marker {
+  id: number;
+  playerId: string;
+  x: number;
+  y: number;
+  label: string;
+  shared: boolean;
+  turn: number;
 }

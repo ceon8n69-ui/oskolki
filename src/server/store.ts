@@ -4,6 +4,7 @@ import { deflateRawSync, inflateRawSync } from 'node:zlib';
 import type { GameState, MapData, PlayerIntel, PlayerState, UnitState, CityState } from '../shared/types.ts';
 import type { Tx, Db } from './db/pool.ts';
 import { canonicalize, stableStringify } from '../engine/canonical.ts';
+import { defaultMode } from '../engine/diplomacy.ts';
 
 type Q = Tx | Db;
 
@@ -59,7 +60,10 @@ export function stateFromJson(json: any, baseMap: MapData): GameState {
 
 /** Хэш состояния для проверки воспроизводимости расчёта. */
 export function stateHash(state: GameState): string {
-  return createHash('sha256').update(stableStringify(stateToJson(canonicalize(structuredClone(state))))).digest('hex');
+  // isBot — признак управления (человек/бот), а не правило: замещение ботом не должно ломать сверку воспроизведения.
+  const c = canonicalize(structuredClone(state));
+  for (const p of c.players) (p as { isBot?: boolean }).isBot = undefined;
+  return createHash('sha256').update(stableStringify(stateToJson(c))).digest('hex');
 }
 
 // ---------- Карта (статичная, кешируется) ----------
@@ -188,6 +192,7 @@ export async function loadState(q: Q, matchId: string): Promise<GameState> {
   const us = await q.query('SELECT * FROM units WHERE match_id=$1 ORDER BY id', [matchId]);
   const cs = await q.query('SELECT * FROM cities WHERE match_id=$1 ORDER BY id', [matchId]);
   const vs = await q.query('SELECT * FROM visibility WHERE match_id=$1', [matchId]);
+  const ds = await q.query('SELECT * FROM diplomacy WHERE match_id=$1 ORDER BY a, b', [matchId]);
   const players: PlayerState[] = pl.rows.map(r => ({
     id: r.id, name: r.name, faction: r.faction, color: r.color, gold: r.gold, knowledge: r.knowledge,
     researched: rs.rows.filter(x => x.player_id === r.id).map(x => x.tech_id),
@@ -214,6 +219,8 @@ export async function loadState(q: Q, matchId: string): Promise<GameState> {
   return canonicalize({
     matchId, turn: m.turn, balanceVersion: m.balance_version, rulesVersion: m.rules_version, map,
     players, units, cities, explored, intel, nextIds: { unit: m.next_unit_id },
+    diplomacy: ds.rows.map(r => ({ a: r.a, b: r.b, status: r.status, since: r.since_turn, pending: r.pending ?? null, proposal: r.proposal ?? null })),
+    mode: m.mode ?? defaultMode(),
   });
 }
 
@@ -263,5 +270,12 @@ export async function saveState(tx: Tx, state: GameState): Promise<void> {
       [id, pid, Buffer.from(packBits(ex)), JSON.stringify(state.intel[pid] ?? { units: {}, cities: {} })],
     );
   }
-  await tx.query('UPDATE matches SET next_unit_id=$2, updated_at=now() WHERE id=$1', [id, state.nextIds.unit]);
+  await tx.query('DELETE FROM diplomacy WHERE match_id=$1', [id]);
+  for (const t of state.diplomacy) {
+    await tx.query(
+      'INSERT INTO diplomacy (match_id, a, b, status, since_turn, ends_turn, pending, proposal) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)',
+      [id, t.a, t.b, t.status, t.since, t.pending?.effectiveTurn ?? null, t.pending ? JSON.stringify(t.pending) : null, t.proposal ? JSON.stringify(t.proposal) : null],
+    );
+  }
+  await tx.query('UPDATE matches SET next_unit_id=$2, mode=$3, updated_at=now() WHERE id=$1', [id, state.nextIds.unit, JSON.stringify(state.mode)]);
 }

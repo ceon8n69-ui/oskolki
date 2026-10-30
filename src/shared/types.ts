@@ -154,6 +154,42 @@ export interface GameState {
   explored: Record<PlayerId, Uint8Array>; // байт-на-клетку: 1 = исследована
   intel: Record<PlayerId, PlayerIntel>; // последние известные сведения о чужих объектах
   nextIds: { unit: number };
+  diplomacy: Treaty[]; // пары, отличные от состояния по умолчанию, или с предложениями
+  mode: MatchMode;
+}
+
+export type TreatyStatus = 'war' | 'truce' | 'alliance';
+
+/** Отношения пары игроков (a < b). */
+export interface Treaty {
+  a: PlayerId;
+  b: PlayerId;
+  status: TreatyStatus;
+  since: number;
+  /** Объявленный разрыв или изменение, вступающее в силу с указанного хода. */
+  pending: { status: TreatyStatus; effectiveTurn: number; by: PlayerId } | null;
+  /** Предложение одной стороны, ждущее ответа. */
+  proposal: { from: PlayerId; status: TreatyStatus; turn: number } | null;
+}
+
+export interface Objective {
+  id: string;
+  kind: 'shrine' | 'city';
+  x: number;
+  y: number;
+  cityId: string | null;
+  points: number;
+  holder: PlayerId | null;
+}
+
+/** Режим партии: условия победы выбираются до старта и не меняются. */
+export interface MatchMode {
+  victory: 'influence' | 'capitals' | 'elimination';
+  turnLimit: number | null;
+  alliances: boolean;
+  objectives: Objective[];
+  scores: Record<PlayerId, number>;
+  finished: { winners: PlayerId[]; reason: string; turn: number } | null;
 }
 
 export const NEUTRAL: PlayerId = 'neutral';
@@ -240,7 +276,15 @@ export interface ResearchOrder {
   queue: string[]; // полная желаемая очередь
 }
 
-export type Order = UnitOrder | RecruitOrder | ResearchOrder | ConstructOrder | SpecializeOrder | PromoteOrder | CommanderOrder;
+/** Дипломатия: предложить / принять / отклонить договор или объявить разрыв. */
+export interface DiplomacyOrder {
+  kind: 'diplomacy';
+  action: 'propose' | 'accept' | 'decline' | 'break';
+  target: PlayerId;
+  status?: TreatyStatus; // для propose
+}
+
+export type Order = UnitOrder | RecruitOrder | ResearchOrder | ConstructOrder | SpecializeOrder | PromoteOrder | CommanderOrder | DiplomacyOrder;
 
 export interface SubmittedOrder {
   id: string;
@@ -265,6 +309,8 @@ export function orderSubjectKey(o: Order): string {
       return `promote:${o.unitId}`;
     case 'commander':
       return o.action === 'ability' ? 'commander:ability' : 'commander:direction';
+    case 'diplomacy':
+      return `diplomacy:${o.target}`;
   }
 }
 
@@ -312,7 +358,14 @@ export type TurnEvent =
   | { t: 'commander_ability'; playerId: PlayerId; ability: string; at: Coord; target?: Coord; affected: UnitId[] }
   | { t: 'commander_direction'; playerId: PlayerId; direction: string; level: number }
   | { t: 'commander_fallen'; playerId: PlayerId; at: Coord; respawnTurn: number }
-  | { t: 'commander_respawned'; playerId: PlayerId; unitId: UnitId; at: Coord };
+  | { t: 'commander_respawned'; playerId: PlayerId; unitId: UnitId; at: Coord }
+  | { t: 'diplomacy_proposed'; from: PlayerId; to: PlayerId; status: TreatyStatus }
+  | { t: 'diplomacy_declined'; from: PlayerId; to: PlayerId; status: TreatyStatus }
+  | { t: 'diplomacy_break_announced'; from: PlayerId; to: PlayerId; status: TreatyStatus; effectiveTurn: number }
+  | { t: 'diplomacy_changed'; a: PlayerId; b: PlayerId; status: TreatyStatus; previous: TreatyStatus }
+  | { t: 'objective_held'; objectiveId: string; holder: PlayerId | null; previous: PlayerId | null; at: Coord }
+  | { t: 'influence'; playerId: PlayerId; gained: number; total: number }
+  | { t: 'match_finished'; winners: PlayerId[]; reason: string };
 
 /** Событие с видимостью: список игроков, которым его можно показать. */
 export interface StoredEvent {

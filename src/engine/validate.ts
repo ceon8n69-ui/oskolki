@@ -8,6 +8,7 @@ import { pathCost } from './path.ts';
 import { canAttackAfterMove, commanderUnit, moveOf, moveProfile, rangeOf, roadGoldCost, traitsOf, techs, unitCost } from './stats.ts';
 import type { Vision } from './vision.ts';
 import { canSeeUnit } from './vision.ts';
+import { findTreaty, isHostile, mayEnter, statusBetween } from './diplomacy.ts';
 
 export type ValidationResult = { ok: true } | { ok: false; reason: string };
 
@@ -159,6 +160,14 @@ export function validateOrder(
         const budget = moveOf(b, state, unit, forcedMarchUnits(b, state, playerId, otherOrders));
         if (pc.cost > budget + 1e-9) return fail('not_enough_movement');
       }
+      // Договоры: перемирие закрывает чужую территорию.
+      {
+        let prev: { x: number; y: number } = unit;
+        for (const s of order.path) {
+          if (!mayEnter(b, state, playerId, prev, s)) return fail('territory_closed');
+          prev = s;
+        }
+      }
       // Нельзя прокладывать путь через видимых игроку чужих отрядов.
       // Невидимые отряды не учитываются — иначе проверка раскрыла бы их положение.
       for (const s of order.path) {
@@ -171,6 +180,7 @@ export function validateOrder(
       const target = state.units.find(u => u.id === order.targetUnitId);
       if (!target || target.hp <= 0 || !canSeeUnit(b, state, playerId, vision, target)) return fail('target_not_visible');
       if (target.owner === playerId) return fail('friendly_target');
+      if (!isHostile(b, state, playerId, target.owner)) return fail('treaty_forbids_attack');
       if (order.path.length && !canAttackAfterMove(b, state, unit)) return fail('cannot_attack_after_move');
       if (order.ability === 'knockback' && !hasAbility(b, unit.type, 'knockback')) return fail('ability_unavailable');
       const end = order.path.length ? order.path[order.path.length - 1] : unit;
@@ -242,6 +252,35 @@ export function validateOrder(
         if (dist(cmd, t) > (ab.range ?? 8)) return fail('target_out_of_range');
       }
       return { ok: true };
+    }
+    case 'diplomacy': {
+      const other = state.players.find(p => p.id === order.target);
+      if (!other || other.id === playerId) return fail('bad_target');
+      if (other.eliminated) return fail('target_eliminated');
+      const t = findTreaty(state, playerId, other.id);
+      const current = statusBetween(b, state, playerId, other.id);
+      if (order.action === 'propose') {
+        const st = order.status;
+        if (!st || !b.diplomacy.statuses[st]) return fail('unknown_status');
+        if (st === 'war') return fail('use_break');
+        if (st === current) return fail('already_in_status');
+        if (st === 'alliance' && !state.mode.alliances) return fail('alliances_disabled');
+        if (t?.pending) return fail('break_pending');
+        return { ok: true };
+      }
+      if (order.action === 'accept') {
+        if (!t?.proposal || t.proposal.from !== other.id) return fail('no_proposal');
+        if (t.proposal.turn >= state.turn) return fail('proposal_not_delivered');
+        if (t.proposal.status === 'alliance' && !state.mode.alliances) return fail('alliances_disabled');
+        return { ok: true };
+      }
+      if (order.action === 'decline') return t?.proposal && t.proposal.from === other.id ? { ok: true } : fail('no_proposal');
+      if (order.action === 'break') {
+        if (current === 'war') return fail('already_at_war');
+        if (t?.pending) return fail('break_pending');
+        return { ok: true };
+      }
+      return fail('unknown_action');
     }
     case 'research': {
       if (!Array.isArray(order.queue) || order.queue.length > 10) return fail('bad_queue');

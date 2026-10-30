@@ -8,6 +8,7 @@ import { knownBlockers } from '../engine/preview.ts';
 import { canAttackAfterMove, commanderUnit, moveOf, moveProfile, rangeOf } from '../engine/stats.ts';
 import { isBuildingUnlocked, isTechAvailable, isUnitUnlocked, validateOrder } from '../engine/validate.ts';
 import { canSeeUnit, computeVision } from '../engine/vision.ts';
+import { isHostile } from '../engine/diplomacy.ts';
 
 /** Предпочтения найма: сначала уникальные юниты народа, затем сильные общие. */
 const RECRUIT_PRIORITY = ['legionary', 'ranger', 'warden', 'ironclad', 'corsair', 'tidecaller', 'cavalry', 'archer', 'spearman', 'shieldbearer', 'infantry'];
@@ -21,7 +22,7 @@ export function botOrders(b: Balance, state: GameState, playerId: PlayerId): Ord
   const explored = state.explored[playerId];
   const orders: Order[] = [];
   const blockers = knownBlockers(b, state, playerId, vision);
-  const enemies = state.units.filter(u => u.owner !== playerId && canSeeUnit(b, state, playerId, vision, u));
+  const enemies = state.units.filter(u => u.owner !== playerId && isHostile(b, state, playerId, u.owner) && canSeeUnit(b, state, playerId, vision, u));
   const claimed = new Set<number>();
   const myUnits = state.units.filter(u => u.owner === playerId).sort((a, c) => (a.id < c.id ? -1 : 1));
   for (const u of myUnits) claimed.add(idx(state.map, u.x, u.y));
@@ -32,7 +33,7 @@ export function botOrders(b: Balance, state: GameState, playerId: PlayerId): Ord
   };
 
   const goals: Coord[] = state.cities
-    .filter(c => c.owner !== playerId && explored?.[idx(state.map, c.x, c.y)])
+    .filter(c => c.owner !== playerId && isHostile(b, state, playerId, c.owner) && explored?.[idx(state.map, c.x, c.y)])
     .map(c => ({ x: c.x, y: c.y }));
   const cmd = commanderUnit(state, playerId);
 
@@ -52,10 +53,7 @@ export function botOrders(b: Balance, state: GameState, playerId: PlayerId): Ord
     }
     // 1. Атака с места.
     const inRange = enemies.filter(e => dist(u, e) <= range).sort((a, c) => a.hp - c.hp);
-    if (inRange.length) {
-      orders.push({ kind: 'unit', unitId: u.id, mode: 'attack', path: [], targetUnitId: inRange[0].id });
-      continue;
-    }
+    if (inRange.length && tryPush({ kind: 'unit', unitId: u.id, mode: 'attack', path: [], targetUnitId: inRange[0].id })) continue;
     // 2. Подойти и атаковать.
     const { cost } = dijkstra(b, state.map, u, { budget: move, blocked: blockers, profile });
     let best: { path: Coord[]; target: string } | null = null;
@@ -103,6 +101,16 @@ export function botOrders(b: Balance, state: GameState, playerId: PlayerId): Ord
       }
     }
     orders.push({ kind: 'unit', unitId: u.id, mode: 'hold', path: [] });
+  }
+
+  // Дипломатия: перемирие с более сильным соседом принимаем, союзы и перемирия со слабыми — отклоняем.
+  const myStrength = myUnits.length;
+  for (const t of state.diplomacy) {
+    if (!t.proposal || t.proposal.from === playerId || (t.a !== playerId && t.b !== playerId) || t.proposal.turn >= state.turn) continue;
+    const other = t.proposal.from;
+    const theirStrength = state.units.filter(u => u.owner === other).length;
+    const accept = t.proposal.status === 'truce' && theirStrength >= myStrength;
+    tryPush({ kind: 'diplomacy', action: accept ? 'accept' : 'decline', target: other });
   }
 
   // Командир: направление развития и «Приказ укрепиться», если рядом враг.

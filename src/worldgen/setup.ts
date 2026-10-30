@@ -1,6 +1,9 @@
 // Создание начального состояния партии из сгенерированного мира.
 import type { Balance } from '../shared/balance.ts';
-import type { GameState, PlayerState } from '../shared/types.ts';
+import type { GameState, MatchMode, PlayerState } from '../shared/types.ts';
+import { Feature } from '../shared/types.ts';
+import { defaultMode, pickObjectives } from '../engine/diplomacy.ts';
+import { createRng, hash32 } from '../engine/rng.ts';
 import { NEUTRAL } from '../shared/types.ts';
 import { DIRS8, isLandPassable } from '../engine/grid.ts';
 import { RULES_VERSION } from '../engine/resolve.ts';
@@ -28,7 +31,7 @@ export function cityName(i: number, seedNum: number): string {
 
 export function createInitialState(
   b: Balance,
-  opts: { matchId: string; spec: WorldSpec; players: SetupPlayer[]; world?: GeneratedWorld },
+  opts: { matchId: string; spec: WorldSpec; players: SetupPlayer[]; world?: GeneratedWorld; mode?: { victory: MatchMode['victory']; turnLimit: number | null; alliances: boolean } },
 ): { state: GameState; world: GeneratedWorld } {
   const world = opts.world ?? generateWorld(b, opts.spec);
   if (world.capitals.length < opts.players.length) throw new Error('генератор не разместил достаточно столиц');
@@ -52,6 +55,8 @@ export function createInitialState(
     explored: {},
     intel: {},
     nextIds: { unit: 1 },
+    diplomacy: [],
+    mode: { ...defaultMode(), ...(opts.mode ?? {}) },
   };
   const { cities, units } = state;
   const spawn = (owner: string, type: string, x: number, y: number) => {
@@ -79,6 +84,14 @@ export function createInitialState(
     spawn(NEUTRAL, b.cities.neutralGarrison, c.x, c.y);
   }
 
+  // Цели влияния объявляются при старте и видны всем.
+  if (state.mode.victory === 'influence') {
+    const shrines: { x: number; y: number }[] = [];
+    for (let i = 0; i < world.map.features.length; i++) if (world.map.features[i] & Feature.Shrine) shrines.push({ x: i % world.map.width, y: Math.floor(i / world.map.width) });
+    const rng = createRng(hash32(`${world.map.seed}#objectives`));
+    state.mode.objectives = pickObjectives(b, state, shrines, n => Math.floor(rng() * n));
+  }
+  for (const p of players) state.mode.scores[p.id] = 0;
   updateExploredAndIntel(b, state, computeAllVision(b, state));
   return { state, world };
 }

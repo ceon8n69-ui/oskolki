@@ -234,10 +234,32 @@
     "coast":         { "name": "Прибрежная мощь", "icon": "wave",   "source": "Народ Приливов у воды", "duration": "пока у воды", "stacking": false, "removal": "—", "description": "Атака ×1.15" },
     "inland":        { "name": "Вдали от моря", "icon": "dry",      "source": "Народ Приливов дальше 3 клеток от воды", "duration": "пока вдали", "stacking": false, "removal": "вернуться к воде", "description": "Атака ×0.85" }
   },
+  "diplomacy": {
+    "default": "war",
+    "breakWarningTurns": 2,
+    "proposalTtl": 3,
+    "statuses": {
+      "war":      { "name": "Война",    "attack": true,  "enterTerritory": true,  "zoc": true,  "shareVision": false, "description": "Атаки и захват разрешены; территорию можно занимать." },
+      "truce":    { "name": "Перемирие", "attack": false, "enterTerritory": false, "zoc": false, "shareVision": false, "description": "Атаки и захват запрещены; входить на территорию (3 клетки от города) нельзя, отряды внутри могут только выйти." },
+      "alliance": { "name": "Союз",     "attack": false, "enterTerritory": true,  "zoc": false, "shareVision": true,  "description": "Атаки запрещены; территория открыта; общий обзор и общие метки." }
+    }
+  },
+  "influence": {
+    "shrinePoints": 2,
+    "cityPoints": 3,
+    "objectivesPerPlayer": 1.5,
+    "minObjectives": 3,
+    "minSpacing": 6
+  },
+  "victoryModes": {
+    "influence":   { "name": "Очки влияния", "description": "Очки за удержание объявленных святилищ и стратегических городов; по достижении лимита ходов побеждает лидер." },
+    "capitals":    { "name": "Захват столиц", "description": "Побеждает тот, кто владеет всеми исходными столицами (союзники — вместе)." },
+    "elimination": { "name": "До последнего", "description": "Побеждает последний оставшийся игрок или союз." }
+  },
   "turnPresets": {
-    "quick":    { "planningSeconds": 90,    "mapPreset": "test32" },
-    "async":    { "planningSeconds": 21600, "mapPreset": "small64" },
-    "vsbot":    { "planningSeconds": 0,     "mapPreset": "test32" },
-    "campaign": { "planningSeconds": 21600, "mapPreset": "world256" }
+    "quick":    { "planningSeconds": 90,    "mapPreset": "test32",   "victory": "elimination", "turnLimit": 40,  "alliances": false, "botTakeoverAfter": 2 },
+    "async":    { "planningSeconds": 21600, "mapPreset": "small64",  "victory": "influence",   "turnLimit": 50,  "alliances": true,  "botTakeoverAfter": 3 },
+    "vsbot":    { "planningSeconds": 0,     "mapPreset": "test32",   "victory": "elimination", "turnLimit": null, "alliances": false, "botTakeoverAfter": null },
+    "campaign": { "planningSeconds": 21600, "mapPreset": "world256", "victory": "influence",   "turnLimit": 80,  "alliances": true,  "botTakeoverAfter": 3 }
   }
 }

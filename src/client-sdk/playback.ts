@@ -7,7 +7,8 @@ export type StepKind =
   | 'contest' | 'contest_cleared' | 'capture' | 'recruit' | 'rank_up' | 'research' | 'income' | 'info'
   | 'build_start' | 'road' | 'route_paused'
   | 'zoc_stop' | 'suppressed' | 'knockback' | 'fort' | 'forest' | 'commander_ability' | 'commander_fallen' | 'commander_respawned'
-  | 'healed' | 'city_grew' | 'building' | 'supply_warning';
+  | 'healed' | 'city_grew' | 'building' | 'supply_warning'
+  | 'diplomacy' | 'objective' | 'influence' | 'match_finished';
 
 export interface PlaybackStep {
   id: number;
@@ -138,6 +139,14 @@ export function buildTimeline(events: StoredEvent[], myPlayerId: string, opts: T
     if (e.t === 'income') add('income', t, 0, e, null, false);
   }
   t += 600;
+  // Итог хода: дипломатия, цели влияния, конец партии.
+  for (const e of [...byPhase('economy'), ...byPhase('finalize')]) {
+    if (e.t === 'objective_held') add('objective', t, 600, e, e.at, true);
+    if (e.t === 'influence') add('influence', t, 400, e, null, true);
+    if (e.t === 'diplomacy_changed' || e.t === 'diplomacy_proposed' || e.t === 'diplomacy_break_announced' || e.t === 'diplomacy_declined') add('diplomacy', t, 800, e, null, true);
+    if (e.t === 'match_finished') add('match_finished', t + 400, 1500, e, null, true);
+  }
+  t += 400;
   for (const e of byPhase('validate')) add('info', 0, 0, e, null, true);
   steps.sort((a, b) => a.start - b.start || a.id - b.id);
   return { steps, total: t };

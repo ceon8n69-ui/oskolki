@@ -21,7 +21,8 @@ const REASONS: Record<string, string> = {
   outside_territory: 'Только на своей территории', building_locked: 'Нужна технология', building_exists: 'Уже построено или строится',
   city_level_too_low: 'Нужен 3-й уровень города', ability_on_cooldown: 'Способность перезаряжается', not_enough_command_points: 'Мало очков командования',
   commander_absent: 'Командир пал', tech_unavailable: 'Технология недоступна вашему народу или исключена выбором', tech_excluded: 'Взаимоисключающие технологии',
-  forest_needs_plains: 'Лес сажают на равнине', fort_exists: 'Укрепление уже есть', route_through_unexplored: 'Маршрут — только по разведанным клеткам',
+  forest_needs_plains: 'Лес сажают на равнине', treaty_forbids_attack: 'Договор запрещает атаку', territory_closed: 'Перемирие: чужая территория закрыта',
+  alliances_disabled: 'В этом режиме союзы запрещены', proposal_not_delivered: 'Предложение ещё не дошло (будет видно со следующего хода)', break_pending: 'Уже объявлен разрыв', fort_exists: 'Укрепление уже есть', route_through_unexplored: 'Маршрут — только по разведанным клеткам',
 };
 const TERRAIN_COLORS: Record<number, string> = { 0: '#1f4e79', 1: '#2f6f9f', 2: '#8fb36b', 3: '#3f7a46', 4: '#a99a63', 5: '#7d7f86', 255: '#0d1013' };
 const UNIT_LETTER: Record<string, string> = { scout: 'Р', infantry: 'П', spearman: 'К', archer: 'Л', shieldbearer: 'Щ', cavalry: 'В', siege: 'О', engineer: 'И', legionary: 'Лг', standard: 'Зн', ranger: 'Сл', warden: 'Ст', ironclad: 'Лт', bombard: 'Б', corsair: 'Кр', tidecaller: 'З', commander: '★' };
@@ -91,6 +92,8 @@ async function lobby() {
   client.close();
   const matches = await client.listMatches().catch(() => []);
   app.innerHTML = `<div class="screen"><h2>Осколки королевств</h2>
+    <div class="row">Победа: <select id="vic">${Object.entries(BALANCE.victoryModes).map(([id, v]) => `<option value="${id}">${esc(v.name)}</option>`).join('')}<option value="" selected>по пресету</option></select>
+      Лимит ходов: <input id="tl" type="number" min="5" max="1000" placeholder="по пресету" style="width:110px"></div>
     <div class="row">Народ: <select id="fac">${Object.entries(BALANCE.factions).map(([id, f]) => `<option value="${id}">${esc(f.name)}</option>`).join('')}</select></div>
     <div class="row"><button class="primary" data-p="quick">Быстрая партия (90 с)</button><button data-p="vsbot">Против бота</button><button data-p="async">Асинхронная (6 ч)</button><button data-p="campaign">Кампания 256×256</button></div>
     <div class="row"><input id="code" placeholder="Код приглашения"><button id="join">Вступить</button></div>
@@ -98,8 +101,15 @@ async function lobby() {
     ${matches.map(m => `<div class="card" data-m="${m.id}"><b>${esc(m.preset)}</b> · ${m.phase === 'lobby' ? `ожидание ${m.players.length}/${m.maxPlayers}` : m.phase === 'finished' ? 'завершена' : `ход ${m.turn}`}<br><span class="muted">${m.players.map(p => esc(p.name)).join(', ')}</span></div>`).join('') || '<p class="muted">Пока нет партий</p>'}
   </div>`;
   app.querySelectorAll<HTMLButtonElement>('[data-p]').forEach(b => (b.onclick = async () => {
-    const m = await client.createMatch(b.dataset.p as 'quick', (document.getElementById('fac') as HTMLSelectElement).value);
-    openMatch(m.id);
+    const vic = (document.getElementById('vic') as HTMLSelectElement).value;
+    const tl = (document.getElementById('tl') as HTMLInputElement).value;
+    try {
+      const m = await client.createMatch(b.dataset.p as 'quick', (document.getElementById('fac') as HTMLSelectElement).value, { ...(vic ? { victory: vic } : {}), ...(tl ? { turnLimit: Number(tl) } : {}) });
+      openMatch(m.id);
+    } catch (e) {
+      toast(e instanceof ApiError ? e.code : String(e));
+    }
+    return;
   }));
   document.getElementById('join')!.onclick = async () => {
     try {
@@ -119,11 +129,21 @@ async function openMatch(id: string) {
       <p>Пригласите соперника ссылкой:</p><div class="card" style="word-break:break-all">${esc(info.inviteLink)}</div>
       <p class="muted">Код: ${esc(info.inviteCode)}</p>
       <div class="card">${info.players.map(p => `${esc(p.name)} — ${esc(BALANCE.factions[p.faction]?.name ?? p.faction)}`).join('<br>')}</div>
+      <div class="muted">Режим: ${esc(BALANCE.victoryModes[info.victory as 'influence']?.name ?? '—')}${info.turnLimit ? `, лимит ${info.turnLimit} ходов` : ''}${info.alliances ? ', союзы разрешены' : ''}</div>
+      <div class="row"><button id="addBot">Добавить бота</button></div>
       <div class="row">Мой народ: <select id="fac2">${Object.entries(BALANCE.factions).map(([fid, f]) => `<option value="${fid}">${esc(f.name)}</option>`).join('')}</select><button id="facSet">Сменить</button></div>
       <div class="row"><button id="share">Поделиться</button><button id="startNow" class="primary">Начать сейчас</button><button id="refresh">Обновить</button><button id="back">Назад</button></div>
       <p class="muted">Начать может создатель партии, когда игроков минимум двое.</p></div>`;
     document.getElementById('share')!.onclick = () => (tg?.openTelegramLink ? tg.openTelegramLink(`https://t.me/share/url?url=${encodeURIComponent(info.inviteLink)}`) : navigator.clipboard?.writeText(info.inviteLink).then(() => toast('Ссылка скопирована')));
     document.getElementById('refresh')!.onclick = () => openMatch(id);
+    document.getElementById('addBot')!.onclick = async () => {
+      try {
+        await client.addBots(id, 1);
+        openMatch(id);
+      } catch (e) {
+        toast(e instanceof ApiError ? e.code : String(e));
+      }
+    };
     document.getElementById('facSet')!.onclick = async () => {
       try {
         await client.setFaction(id, (document.getElementById('fac2') as HTMLSelectElement).value);
@@ -156,7 +176,9 @@ async function openMatch(id: string) {
 let cam = { x: 16, y: 16, size: 28 };
 let selected: string | null = null;
 let moveTiles: { x: number; y: number; cost: number }[] = [];
-let sheet: 'none' | 'city' | 'research' | 'log' | 'commander' = 'none';
+let sheet: 'none' | 'city' | 'research' | 'log' | 'commander' | 'diplomacy' = 'none';
+let markerMode = false;
+let markers: { id: number; playerId: string; x: number; y: number; label: string; shared: boolean }[] = [];
 let bashMode = false;
 let pulseMode = false;
 let supplyLayer = false;
@@ -171,7 +193,7 @@ async function gameScreen() {
     <div class="top" id="top"></div>
     <canvas id="mini" width="120" height="120" style="position:fixed;right:8px;top:52px;z-index:2;border:1px solid #fff4;border-radius:6px;background:#000a;width:120px;height:120px"></canvas>
     <div class="bottom">
-      <button id="bResearch">Исследования</button><button id="bCities">Города</button><button id="bArmy">Армия</button><button id="bCmd">Командир</button><button id="bSupply">Снабжение</button><button id="bLog">Журнал</button>
+      <button id="bResearch">Исследования</button><button id="bCities">Города</button><button id="bArmy">Армия</button><button id="bCmd">Командир</button><button id="bDip">Дипломатия</button><button id="bMark">Метка</button><button id="bSupply">Снабжение</button><button id="bLog">Журнал</button>
       <span class="spacer"></span><button class="primary" id="bReady">Готов</button>
     </div><div id="sheet"></div>`;
   canvas = document.getElementById('map') as HTMLCanvasElement;
@@ -200,6 +222,12 @@ async function gameScreen() {
   document.getElementById('bCities')!.onclick = () => toggleSheet('city');
   document.getElementById('bLog')!.onclick = () => toggleSheet('log');
   document.getElementById('bCmd')!.onclick = () => toggleSheet('commander');
+  document.getElementById('bDip')!.onclick = () => toggleSheet('diplomacy');
+  document.getElementById('bMark')!.onclick = () => {
+    markerMode = true;
+    toast('Нажмите клетку, чтобы поставить метку');
+  };
+  markers = await client.markers().catch(() => []);
   document.getElementById('bSupply')!.onclick = () => {
     supplyLayer = !supplyLayer;
     toast(supplyLayer ? 'Слой снабжения: зелёным — своя зона' : 'Слой снабжения выключен');
@@ -277,7 +305,9 @@ function renderHud() {
     <span class="pill">✦ ${st.view.me.researchProgress}</span>
     <span class="pill">Ход ${st.view.turn}</span><span class="pill">⏱ ${time}</span>
     <span class="pill ${me?.ready ? 'ready' : ''}">Готовы ${readyCount}/${st.match.players.length}</span>
-    ${st.match.phase === 'finished' ? `<span class="pill">${st.match.winner === st.view.me.id ? 'Победа!' : 'Партия завершена'}</span>` : ''}
+    ${st.view.mode.victory === 'influence' ? `<span class="pill">◈ ${st.view.mode.scores[st.view.me.id] ?? 0}</span>` : ''}
+    ${st.view.mode.turnLimit ? `<span class="pill">до ${st.view.mode.turnLimit}</span>` : ''}
+    ${st.match.phase === 'finished' ? `<span class="pill">${(st.match.winners ?? [st.match.winner]).includes(st.view.me.id) ? 'Победа!' : 'Партия завершена'}</span>` : ''}
     ${player && !player.done ? `<span class="spacer"></span><button id="sp">×${player.speed === 1 ? 2 : 1}</button><button id="sk">Пропустить</button>` : ''}`;
   const rb = document.getElementById('bReady') as HTMLButtonElement;
   rb.textContent = me?.ready ? 'Отменить готовность' : 'Готов';
@@ -400,6 +430,29 @@ function renderSheet() {
     el.querySelectorAll<HTMLButtonElement>('[data-dir]').forEach(bt => (bt.onclick = () => submit(client.commanderDirection(bt.dataset.dir!))));
     const f = document.getElementById('cmdFocus');
     if (f && cmd) f.onclick = () => select(cmd.id, true);
+  } else if (sheet === 'diplomacy') {
+    const mode = st.view.mode;
+    const statusOf = (pid: string) => st.view.diplomacy.find(t => (t.a === pid && t.b === me.id) || (t.b === pid && t.a === me.id));
+    const SN: Record<string, string> = { war: 'Война', truce: 'Перемирие', alliance: 'Союз' };
+    el.innerHTML = `<div class="sheet"><h3>Дипломатия · ${esc(BALANCE.victoryModes[mode.victory].name)}${mode.turnLimit ? ` · ход ${st.view.turn}/${mode.turnLimit}` : ''}</h3>
+      <div class="muted">${esc(BALANCE.victoryModes[mode.victory].description)}</div>
+      ${mode.victory === 'influence' ? `<div>Очки: ${st.view.players.map(p => `${esc(p.name)} ${mode.scores[p.id] ?? 0}`).join(' · ')}</div><div class="muted">Целей: ${mode.objectives.length} (на карте — ромбы)</div>` : ''}
+      ${st.view.players.filter(p => p.id !== me.id).map(p => {
+        const t = statusOf(p.id);
+        const status = t?.status ?? BALANCE.diplomacy.default;
+        const incoming = t?.proposal && t.proposal.from === p.id;
+        const outgoing = t?.proposal && t.proposal.from === me.id;
+        return `<div class="card"><b>${esc(p.name)}</b> (${esc(BALANCE.factions[p.faction]?.name ?? '')})${p.eliminated ? ' — выбыл' : ''} · <b>${SN[status]}</b>
+          ${t?.pending ? `<div class="muted">Разрыв: война с хода ${t.pending.effectiveTurn}</div>` : ''}
+          ${incoming ? `<div>Предлагает: ${SN[t!.proposal!.status]} <button data-dacc="${p.id}">Принять</button><button data-ddec="${p.id}">Отклонить</button></div>` : ''}
+          ${outgoing ? `<div class="muted">Ваше предложение: ${SN[t!.proposal!.status]} — ждёт ответа</div>` : ''}
+          <div class="row">${status === 'war' ? `<button data-dprop="${p.id}" data-st="truce">Предложить перемирие</button>` : ''}${status !== 'alliance' && mode.alliances ? `<button data-dprop="${p.id}" data-st="alliance">Предложить союз</button>` : ''}${status !== 'war' && !t?.pending ? `<button data-dbrk="${p.id}">Разорвать (через ${BALANCE.diplomacy.breakWarningTurns} х.)</button>` : ''}</div></div>`;
+      }).join('')}
+      <div class="muted">${Object.values(BALANCE.diplomacy.statuses).map(x => `${x.name}: ${x.description}`).join('<br>')}</div></div>`;
+    el.querySelectorAll<HTMLButtonElement>('[data-dprop]').forEach(bt => (bt.onclick = () => submit(client.diplomacy(bt.dataset.dprop!, 'propose', bt.dataset.st as 'truce'))));
+    el.querySelectorAll<HTMLButtonElement>('[data-dacc]').forEach(bt => (bt.onclick = () => submit(client.diplomacy(bt.dataset.dacc!, 'accept'))));
+    el.querySelectorAll<HTMLButtonElement>('[data-ddec]').forEach(bt => (bt.onclick = () => submit(client.diplomacy(bt.dataset.ddec!, 'decline'))));
+    el.querySelectorAll<HTMLButtonElement>('[data-dbrk]').forEach(bt => (bt.onclick = () => confirm('Разорвать договор? Война начнётся после периода предупреждения.') && submit(client.diplomacy(bt.dataset.dbrk!, 'break'))));
   } else if (sheet === 'log') {
     el.innerHTML = `<div class="sheet"><h3>Журнал событий</h3><div class="log">${logLines.slice(-80).reverse().map(esc).join('<br>') || 'Пусто'}</div></div>`;
   } else el.innerHTML = '';
@@ -591,6 +644,24 @@ function frame(now: number) {
     }
     ctx.stroke();
   }
+  // цели влияния и метки
+  for (const o of st.view.mode.objectives) {
+    const { sx, sy } = tileToScreen(o.x, o.y);
+    ctx.fillStyle = st.view.players.find(p => p.id === o.holder)?.color ?? '#ffd76a';
+    ctx.beginPath();
+    ctx.moveTo(sx, sy - S * 0.45);
+    ctx.lineTo(sx + S * 0.2, sy - S * 0.25);
+    ctx.lineTo(sx, sy - S * 0.05);
+    ctx.lineTo(sx - S * 0.2, sy - S * 0.25);
+    ctx.fill();
+  }
+  for (const mk of markers) {
+    const { sx, sy } = tileToScreen(mk.x, mk.y);
+    ctx.fillStyle = '#fff';
+    ctx.font = '11px system-ui';
+    ctx.textAlign = 'center';
+    ctx.fillText('⚑ ' + mk.label, sx, sy - S * 0.55);
+  }
   // устаревшие сведения
   for (const su of st.view.staleUnits) {
     const { sx, sy } = tileToScreen(su.x, su.y);
@@ -702,6 +773,12 @@ async function select(id: string | null, center = false) {
 async function tap(t: Coord) {
   const st = client.state!;
   if (st.match.phase !== 'planning' || (player && !player.done)) return;
+  if (markerMode) {
+    markerMode = false;
+    const label = prompt('Текст метки (видна союзникам):');
+    if (label) markers = await client.addMarker(t.x, t.y, label, true).catch(() => markers);
+    return;
+  }
   if (pulseMode) {
     pulseMode = false;
     return submit(client.commanderAbility('scout_pulse', t));
@@ -798,6 +875,13 @@ function logEvents(events: StoredEvent[], turn?: number) {
       e.t === 'commander_ability' ? `Командир: ${BALANCE.commander.abilities[e.ability].name}` :
       e.t === 'commander_fallen' ? `Командир пал, вернётся с хода ${e.respawnTurn}` :
       e.t === 'commander_respawned' ? 'Командир вернулся' :
+      e.t === 'diplomacy_proposed' ? `${name(e.from)} предлагает ${name(e.to)}: ${BALANCE.diplomacy.statuses[e.status].name}` :
+      e.t === 'diplomacy_changed' ? `${name(e.a)} и ${name(e.b)}: ${BALANCE.diplomacy.statuses[e.status].name}` :
+      e.t === 'diplomacy_declined' ? `${name(e.from)} отклонил предложение` :
+      e.t === 'diplomacy_break_announced' ? `${name(e.from)} разрывает договор с ${name(e.to)}: война с хода ${e.effectiveTurn}` :
+      e.t === 'influence' ? `Влияние +${e.gained} (всего ${e.total})` :
+      e.t === 'objective_held' ? `Цель ${e.objectiveId}: ${e.holder ? name(e.holder) : 'никто'}` :
+      e.t === 'match_finished' ? `Партия окончена: ${e.winners.map(w => name(w)).join(', ') || 'без победителя'}` :
       e.t === 'route_paused' ? `Маршрут остановлен (${e.reason === 'threat' ? 'угроза рядом' : e.reason === 'blocked' ? 'путь перекрыт' : 'путь недоступен'})` :
       e.t === 'route_completed' ? 'Маршрут завершён' :
       e.t === 'build_failed' ? `Строительство сорвано (${e.reason})` :

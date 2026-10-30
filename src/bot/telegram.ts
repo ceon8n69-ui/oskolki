@@ -178,6 +178,9 @@ export class TelegramBot {
           if (n.kind === 'turn' && prefs.turn !== false) lines.push(`Ход ${p.turn}: результаты готовы, можно отдавать приказы.`);
           if (n.kind === 'turn' && p.attacked > 0 && prefs.attack !== false) lines.push(`Ваши отряды атакованы (${p.attacked}).`);
           if (n.kind === 'turn' && p.lostCities > 0 && prefs.attack !== false) lines.push(`Потеряно городов: ${p.lostCities}.`);
+          if (n.kind === 'turn' && p.proposals > 0) lines.push(`Новые дипломатические предложения: ${p.proposals}.`);
+          if (n.kind === 'turn' && p.breaks > 0) lines.push('Против вас объявлен разрыв договора.');
+          if (n.kind === 'turn' && p.botTakeover) lines.push('Вы пропустили несколько ходов — управление передано боту. Отдайте любой приказ, чтобы вернуть его.');
           if (n.kind === 'deadline' && prefs.deadline !== false) lines.push(`Планирование хода ${p.turn} скоро закончится.`);
           if (n.kind === 'end' && prefs.end !== false) lines.push(p.won ? 'Партия завершена — победа!' : 'Партия завершена.');
         }
