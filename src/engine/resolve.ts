@@ -28,10 +28,11 @@ import {
 } from './stats.ts';
 import { cityBuildingEffect, computeSupply } from './supply.ts';
 import { validateAll } from './validate.ts';
+import { checkVictory, exertsZocOn, isHostile, mayEnter, objectiveHolder, treatyOf } from './diplomacy.ts';
 import type { ExtraVision, Vision } from './vision.ts';
 import { canSeeUnitAt, computeAllVision, updateExploredAndIntel } from './vision.ts';
 
-export const RULES_VERSION = 'rules-2.0.0';
+export const RULES_VERSION = 'rules-3.0.0';
 
 export interface ResolveResult {
   state: GameState;
@@ -85,6 +86,7 @@ export function resolveTurn(b: Balance, input: GameState, orders: SubmittedOrder
   for (const r of rejected) log.push({ t: 'order_rejected', playerId: r.order.playerId, orderId: r.order.id, reason: r.reason }, [r.order.playerId]);
 
   const unitOrders = new Map<string, UnitOrder>();
+  const diplomacyOrders: SubmittedOrder[] = [];
   const builds = new Map<string, { u: UnitState; kind: BuildKind }>();
   for (const so of accepted) {
     const o = so.order;
@@ -144,6 +146,10 @@ export function resolveTurn(b: Balance, input: GameState, orders: SubmittedOrder
         break;
       case 'commander':
         applyCommanderOrder(b, state, p, o, ctx, log);
+        break;
+      case 'diplomacy':
+        // Договоры вступают в силу в конце хода: этот ход считается по отношениям его начала.
+        diplomacyOrders.push(so);
         break;
     }
   }
@@ -216,6 +222,7 @@ export function resolveTurn(b: Balance, input: GameState, orders: SubmittedOrder
   }
   resolveEconomy(b, state, log);
   resolveSupplyAndHealing(b, state, log, ctx);
+  if (state.mode.victory === 'influence') scoreInfluence(state, log, players);
 
   // Выбывание
   for (const p of state.players) {
@@ -228,8 +235,14 @@ export function resolveTurn(b: Balance, input: GameState, orders: SubmittedOrder
     }
   }
 
-  // ---------- 10. Итог ----------
+  // ---------- 10. Итог: дипломатия, условия победы ----------
   log.phase = 'finalize';
+  resolveDiplomacy(b, state, diplomacyOrders, log, players);
+  const fin = state.mode.finished ? null : checkVictory(b, state);
+  if (fin) {
+    state.mode.finished = { ...fin, turn: state.turn };
+    log.push({ t: 'match_finished', winners: fin.winners, reason: fin.reason }, players);
+  }
   const visionEnd = computeAllVision(b, state, ctx.extraVision);
   state.turn += 1;
   updateExploredAndIntel(b, state, visionEnd);
@@ -262,6 +275,64 @@ function visibleToUnitAt(b: Balance, state: GameState, vision: Map<PlayerId, Vis
     }
   }
   return out;
+}
+
+// ======================= Дипломатия и влияние =======================
+
+function resolveDiplomacy(b: Balance, state: GameState, orders: SubmittedOrder[], log: EventLog, players: PlayerId[]): void {
+  const next = state.turn + 1;
+  for (const so of orders) {
+    const o = so.order;
+    if (o.kind !== 'diplomacy') continue;
+    const t = treatyOf(b, state, so.playerId, o.target);
+    const both = [so.playerId, o.target];
+    if (o.action === 'propose') {
+      t.proposal = { from: so.playerId, status: o.status!, turn: state.turn };
+      log.push({ t: 'diplomacy_proposed', from: so.playerId, to: o.target, status: o.status! }, both);
+    } else if (o.action === 'accept' && t.proposal && t.proposal.from === o.target) {
+      const previous = t.status;
+      t.status = t.proposal.status;
+      t.since = next;
+      t.proposal = null;
+      t.pending = null;
+      log.push({ t: 'diplomacy_changed', a: t.a, b: t.b, status: t.status, previous }, players);
+    } else if (o.action === 'decline' && t.proposal) {
+      log.push({ t: 'diplomacy_declined', from: so.playerId, to: o.target, status: t.proposal.status }, both);
+      t.proposal = null;
+    } else if (o.action === 'break' && t.status !== 'war' && !t.pending) {
+      t.pending = { status: 'war', effectiveTurn: next + b.diplomacy.breakWarningTurns, by: so.playerId };
+      t.proposal = null;
+      log.push({ t: 'diplomacy_break_announced', from: so.playerId, to: o.target, status: 'war', effectiveTurn: t.pending.effectiveTurn }, players);
+    }
+  }
+  for (const t of state.diplomacy) {
+    if (t.pending && t.pending.effectiveTurn <= next) {
+      const previous = t.status;
+      t.status = t.pending.status;
+      t.since = next;
+      t.pending = null;
+      log.push({ t: 'diplomacy_changed', a: t.a, b: t.b, status: t.status, previous }, players);
+    }
+    if (t.proposal && t.proposal.turn + b.diplomacy.proposalTtl < next) t.proposal = null;
+  }
+  // Пары без отличий от состояния по умолчанию не храним.
+  state.diplomacy = state.diplomacy.filter(t => t.status !== b.diplomacy.default || t.pending || t.proposal);
+}
+
+function scoreInfluence(state: GameState, log: EventLog, players: PlayerId[]): void {
+  const gained: Record<string, number> = {};
+  for (const o of state.mode.objectives) {
+    const holder = objectiveHolder(state, o);
+    if (holder !== o.holder) {
+      log.push({ t: 'objective_held', objectiveId: o.id, holder, previous: o.holder, at: { x: o.x, y: o.y } }, players);
+      o.holder = holder;
+    }
+    if (holder) gained[holder] = (gained[holder] ?? 0) + o.points;
+  }
+  for (const [p, g] of Object.entries(gained).sort()) {
+    state.mode.scores[p] = (state.mode.scores[p] ?? 0) + g;
+    log.push({ t: 'influence', playerId: p, gained: g, total: state.mode.scores[p] }, [p]);
+  }
 }
 
 // ======================= Командир =======================
@@ -333,6 +404,12 @@ function resolveMovement(
       const c = landMoveCost(b, map, m.u, next, m.profile);
       if (c === null || m.spent + c > m.budget + 1e-9 || dist(m.u, next) !== 1) {
         m.stopped = true;
+        continue;
+      }
+      if (!mayEnter(b, state, m.u.owner, m.u, next)) {
+        m.stopped = true;
+        m.blockedReason = 'territory_closed';
+        log.push({ t: 'move_blocked', unitId: m.u.id, owner: m.u.owner, at: { x: m.u.x, y: m.u.y }, wanted: next, tick, reason: 'territory_closed' }, [m.u.owner]);
         continue;
       }
       want.set(m, next);
@@ -415,7 +492,7 @@ function resolveMovement(
     // Зона контроля: вошедший на клетку рядом с противником, держащим ЗК, останавливается.
     for (const mv of moves) {
       if (hasAbility(b, mv.m.u.type, 'ignore_zoc') || mv.m.step >= mv.m.path.length) continue;
-      const holder = zocUnits.find(z => z.hp > 0 && z.owner !== mv.m.u.owner && dist(z, mv.m.u) === 1);
+      const holder = zocUnits.find(z => z.hp > 0 && z.owner !== mv.m.u.owner && dist(z, mv.m.u) === 1 && exertsZocOn(b, state, z.owner, mv.m.u.owner));
       if (holder) {
         mv.m.stopped = true;
         mv.m.blockedReason = 'zoc';
@@ -598,7 +675,7 @@ function resolveCapture(b: Balance, state: GameState, log: EventLog, vision: Map
     const occ = state.units.find(u => u.x === city.x && u.y === city.y);
     const watchers = players.filter(p => vision.get(p)!.visible[idx(state.map, city.x, city.y)]);
     const ownerList = city.owner && city.owner !== NEUTRAL ? [city.owner] : [];
-    if (occ && occ.owner !== NEUTRAL && occ.owner !== city.owner) {
+    if (occ && occ.owner !== NEUTRAL && occ.owner !== city.owner && isHostile(b, state, occ.owner, city.owner)) {
       const holding = city.contestedBy === occ.owner && city.contestedSinceTurn !== null && city.contestedSinceTurn <= state.turn - b.capture.holdTurns;
       if (holding) {
         const from = city.owner;

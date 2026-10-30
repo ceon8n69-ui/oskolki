@@ -12,6 +12,8 @@ export function canonicalize(state: GameState): GameState {
   for (const u of state.units) if (u.route === undefined) u.route = null;
   state.cities.sort((a, b) => idCompare(a.id, b.id));
   for (const p of state.players) p.researched.sort();
+  state.diplomacy ??= [];
+  state.diplomacy.sort((x, y) => (x.a + '|' + x.b < y.a + '|' + y.b ? -1 : 1));
   return state;
 }
 

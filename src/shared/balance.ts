@@ -192,7 +192,27 @@ export interface Balance {
   techs: Record<string, TechRule>;
   factions: Record<string, FactionRule>;
   effects: Record<string, EffectRule>;
-  turnPresets: Record<string, { planningSeconds: number; mapPreset: string }>;
+  diplomacy: {
+    default: TreatyStatus;
+    breakWarningTurns: number;
+    proposalTtl: number;
+    statuses: Record<TreatyStatus, { name: string; attack: boolean; enterTerritory: boolean; zoc: boolean; shareVision: boolean; description: string }>;
+  };
+  influence: { shrinePoints: number; cityPoints: number; objectivesPerPlayer: number; minObjectives: number; minSpacing: number };
+  victoryModes: Record<VictoryMode, { name: string; description: string }>;
+  turnPresets: Record<string, TurnPreset>;
+}
+
+export type TreatyStatus = 'war' | 'truce' | 'alliance';
+export type VictoryMode = 'influence' | 'capitals' | 'elimination';
+
+export interface TurnPreset {
+  planningSeconds: number;
+  mapPreset: string;
+  victory: VictoryMode;
+  turnLimit: number | null;
+  alliances: boolean;
+  botTakeoverAfter: number | null;
 }
 
 function validate(b: Balance): Balance {

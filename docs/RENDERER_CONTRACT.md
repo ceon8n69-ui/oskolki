@@ -55,6 +55,13 @@ client.on('turnResolved', ({ events, before, after }) => ...); // новый х�
 - Командир: `view.me.commander` (очки, перезарядки, направления, `pendingChoices`), способности — `client.commanderAbility`, направление — `client.commanderDirection`. «Разведывательный импульс» требует выбора клетки.
 - Новые шаги шкалы: `zoc_stop`, `suppressed`, `knockback` (сдвиг цели `from → to`), `fort`, `forest` (клетка меняет рельеф на лес), `commander_ability`, `commander_fallen`, `commander_respawned`, `healed`, `city_grew`, `building`, `supply_warning`.
 
+## Этап 4: дипломатия, цели, метки
+
+- `view.diplomacy` — пары с договорами (`status`: war / truce / alliance, `pending` — объявленный разрыв, `proposal` — только для сторон). Цвет границ/флажков может показывать статус.
+- `view.mode` — режим победы, лимит ходов, `objectives` (святилища и стратегические города с `holder`), `scores`, `finished`.
+- Метки: `client.markers()`, `addMarker(x, y, label, shared)`, `deleteMarker(id)` — флажки с текстом на клетках.
+- Новые шаги шкалы: `diplomacy`, `objective`, `influence`, `match_finished` (финальный экран).
+
 ## Предпросмотр (для подсветки)
 
 - `client.previewMoves(unitId)` → клетки, куда можно дойти в этот ход, со стоимостью.

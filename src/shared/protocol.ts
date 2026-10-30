@@ -1,5 +1,5 @@
 // Протокол клиент ↔ сервер. Клиентский рендерер работает только с этими типами.
-import type { CityId, Order, PlayerId, PlayerState, ProductionItem, StatusEffect, StoredEvent, UnitId, UnitRoute } from './types.ts';
+import type { CityId, MatchMode, Order, PlayerId, PlayerState, ProductionItem, StatusEffect, StoredEvent, Treaty, UnitId, UnitRoute } from './types.ts';
 
 export const PROTOCOL_VERSION = 1;
 
@@ -75,6 +75,8 @@ export interface PlayerView {
   units: ViewUnit[];
   staleUnits: StaleUnit[];
   cities: ViewCity[];
+  diplomacy: Treaty[];
+  mode: MatchMode;
 }
 
 export interface ChunkView {
@@ -96,9 +98,13 @@ export interface MatchInfo {
   turn: number;
   deadline: string | null; // ISO
   maxPlayers: number;
-  players: { id: PlayerId; name: string; ready: boolean; isBot: boolean; faction: string; color: string }[];
+  players: { id: PlayerId; name: string; ready: boolean; isBot: boolean; faction: string; color: string; replacedByBot?: boolean }[];
   winner: PlayerId | null;
+  winners?: PlayerId[];
   inviteCode: string;
+  victory?: string;
+  turnLimit?: number | null;
+  alliances?: boolean;
 }
 
 /** Ответ GET /api/matches/:id/state — всё, что нужно клиенту для отрисовки хода. */

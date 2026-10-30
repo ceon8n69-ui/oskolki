@@ -2,7 +2,7 @@
 
 Telegram Mini App — стратегия на большой карте с **одновременным планированием ходов**: все игроки отдают приказы, затем сервер рассчитывает результат. Бот: [@oskolki_k_bot](https://t.me/oskolki_k_bot).
 
-## Статус — этапы 1–3, серверная часть (v0.4)
+## Статус — этапы 1–4, серверная часть (v0.5)
 
 Готово и покрыто тестами:
 
@@ -17,6 +17,8 @@ Telegram Mini App — стратегия на большой карте с **о�
 **Этап 2 (большой мир):** кампания 256×256 до 32 игроков, генерация в отдельном потоке с выравниванием стартов, долгие маршруты на несколько ходов (с остановкой при угрозе), строительство дорог, мини-карта, сжатые снимки и кеш состояния. Замеры — [docs/LOAD_TEST.md](docs/LOAD_TEST.md).
 
 **Этап 3 (стратегическая глубина):** четыре народа с собственными механиками, командирами, двумя уникальными отрядами и ветками наследия; восемь базовых классов; 25 общих и по 4 уникальных технологии, в том числе взаимоисключающие; постройки, рост и специализации городов; материалы (древесина, железо, кристаллы); снабжение и лечение; прокачка с выбором улучшения; тактика — зона контроля, прикрытие, строй, высота, подавление, отталкивание, засады, укрепления. Справочник — [docs/RULES.md](docs/RULES.md) (генерируется из конфигурации: `npm run docs`).
+
+**Этап 4 (кампания):** дипломатия (война, перемирие с закрытой территорией, союз с общим обзором и метками, разрыв с периодом предупреждения), условия победы на выбор при создании партии (очки влияния за объявленные цели с лимитом ходов, захват столиц, до последнего), боты в лобби, замещение отсутствующих игроков ботом с возвратом управления, полный журнал приказов (в том числе ботов) для воспроизведения.
 
 Графика (low-poly изометрия, модели, анимации) — отдельная задача: контракт в [docs/RENDERER_CONTRACT.md](docs/RENDERER_CONTRACT.md). Старый одиночный прототип 0.1 лежит в `legacy/` для справки.
 
@@ -71,8 +73,10 @@ test/                    тесты правил, генератора и сер
 | Метод | Путь | Назначение |
 |---|---|---|
 | POST | `/api/auth/telegram` | `{initData}` → токен сессии |
-| GET/POST | `/api/matches` | мои партии / создать (`preset`: `quick`, `async`, `vsbot`, `campaign`; `faction`) |
+| GET/POST | `/api/matches` | мои партии / создать (`preset`: `quick`, `async`, `vsbot`, `campaign`; `faction`; `victory`, `turnLimit`, `alliances`) |
 | POST | `/api/matches/:id/faction` | смена народа в лобби |
+| POST | `/api/matches/:id/bots` | добавить ботов в лобби (создатель) |
+| GET/POST/DELETE | `/api/matches/:id/markers` | метки на карте (общие видят союзники) |
 | GET | `/api/rules` | справочник правил из конфигурации баланса |
 | POST | `/api/matches/:id/start` | старт создателем (от 2 игроков) |
 | POST | `/api/matches/join` | `{inviteCode}` |
@@ -80,7 +84,7 @@ test/                    тесты правил, генератора и сер
 | GET | `/api/matches/:id/chunks?list=0,0;1,0` | местность с учётом тумана |
 | GET | `/api/matches/:id/events?turn=N` | видимые игроку события хода |
 | GET | `/api/matches/:id/minimap` | исследованная местность, города, видимые отряды |
-| POST/DELETE | `/api/matches/:id/orders` | приказ `{turn, order, idempotencyKey, baseVersion?}` / отмена. Отряды: `move` (+`longRoute`, `stopOnThreat`), `attack` (+`ability: knockback`), `hold`, `build` (`road`, `fort`, `forest`); города: `recruit`, `construct`, `specialize`; `research`, `promote`, `commander` (`ability` / `direction`) |
+| POST/DELETE | `/api/matches/:id/orders` | приказ `{turn, order, idempotencyKey, baseVersion?}` / отмена. Отряды: `move` (+`longRoute`, `stopOnThreat`), `attack` (+`ability: knockback`), `hold`, `build` (`road`, `fort`, `forest`); города: `recruit`, `construct`, `specialize`; `research`, `promote`, `commander` (`ability` / `direction`), `diplomacy` (`propose` / `accept` / `decline` / `break`) |
 | POST | `/api/matches/:id/ready` | готовность |
 | GET/POST | `/api/matches/:id/preview/moves`, `/preview/attack` | подсветка и прогноз боя |
 | WS | `/ws?token=…` | `subscribe` → `turn_resolved`, `match`, `ready_changed` |

@@ -4,6 +4,7 @@ import type { GameState, PlayerId, UnitState } from '../shared/types.ts';
 import { NEUTRAL } from '../shared/types.ts';
 import { idx, inBounds, terrainAt } from './grid.ts';
 import { commanderAura, techs, visionOf } from './stats.ts';
+import { allies } from './diplomacy.ts';
 
 export interface Vision {
   /** 1 — клетка видна сейчас. */
@@ -33,15 +34,18 @@ export function computeVision(b: Balance, state: GameState, playerId: PlayerId, 
   const n = state.map.width * state.map.height;
   const visible = new Uint8Array(n);
   const close = new Uint8Array(n);
+  // Союзники делят обзор (ограниченный обмен разведданными — только текущий обзор, без их памяти).
+  const sources = new Set<PlayerId>([playerId]);
+  if (b.diplomacy.statuses.alliance.shareVision) for (const a of allies(b, state, playerId)) sources.add(a);
   for (const u of state.units) {
-    if (u.owner !== playerId || u.hp <= 0) continue;
-    const bonus = terrainRule(b, terrainAt(state.map, u.x, u.y)).visionBonus + commanderAura(b, state, playerId, u, 'scouting');
+    if (!sources.has(u.owner) || u.hp <= 0) continue;
+    const bonus = terrainRule(b, terrainAt(state.map, u.x, u.y)).visionBonus + commanderAura(b, state, u.owner, u, 'scouting');
     stamp(state, visible, u.x, u.y, visionOf(b, state, u) + bonus);
     stamp(state, close, u.x, u.y, 1);
   }
   const cityBonus = techs(b, state, playerId).cityVisionBonus;
   for (const c of state.cities) {
-    if (c.owner !== playerId) continue;
+    if (!c.owner || !sources.has(c.owner)) continue;
     stamp(state, visible, c.x, c.y, b.cities.visionRadius + cityBonus);
     stamp(state, close, c.x, c.y, 1);
   }

@@ -44,5 +44,15 @@ for (const [, a] of Object.entries(b.commander.abilities)) L.push(`- **${a.name}
 for (const [, d] of Object.entries(b.commander.directions)) L.push(`- Направление **${d.name}** — ${d.description}`);
 L.push('', '## Снабжение', '', `Радиус от города по уровню: ${b.supply.cityRadius.slice(1).join(', ')}. Вне зоны: через ${b.supply.lowSupplyAfter} ход — «под угрозой» (нет лечения), через ${b.supply.unsuppliedAfter} — «без снабжения» (атака и защита ×${b.combat.unsuppliedMultiplier}). Отряды не гибнут от отсутствия снабжения.`);
 L.push(`Лечение не действовавших отрядов в зоне: +${b.healing.inSupply}, в своём городе ещё +${b.healing.inOwnCity}.`, '');
+L.push('## Дипломатия', '', `По умолчанию — ${b.diplomacy.statuses[b.diplomacy.default].name.toLowerCase()}. Разрыв договора вступает в силу через ${b.diplomacy.breakWarningTurns} хода; предложения действуют ${b.diplomacy.proposalTtl} хода.`, '');
+for (const [, d] of Object.entries(b.diplomacy.statuses)) L.push(`- **${d.name}** — ${d.description}`);
+L.push('', '## Условия победы', '');
+for (const [, v] of Object.entries(b.victoryModes)) L.push(`- **${v.name}** — ${v.description}`);
+L.push('', `Цели влияния: святилище ${b.influence.shrinePoints} очк./ход, стратегический город ${b.influence.cityPoints} очк./ход; не менее ${b.influence.minObjectives} целей, ${b.influence.objectivesPerPlayer} на игрока.`, '');
+L.push('## Пресеты партий', '');
+row('Пресет', 'Карта', 'Время хода', 'Победа', 'Лимит ходов', 'Союзы', 'Бот замещает после');
+row(...Array(7).fill('---'));
+for (const [id, t] of Object.entries(b.turnPresets)) row(id, t.mapPreset, t.planningSeconds ? `${t.planningSeconds} с` : 'по готовности', b.victoryModes[t.victory].name, t.turnLimit ?? '—', t.alliances ? 'да' : 'нет', t.botTakeoverAfter ? `${t.botTakeoverAfter} пропусков` : '—');
+L.push('');
 writeFileSync(new URL('../docs/RULES.md', import.meta.url), L.join('\n'));
 console.log('docs/RULES.md обновлён');

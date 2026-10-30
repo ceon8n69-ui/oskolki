@@ -51,6 +51,12 @@ export function playerView(b: Balance, state: GameState, playerId: PlayerId, vis
     units,
     staleUnits,
     cities,
+    // Политическая карта открыта: статусы и объявленные разрывы видны всем, предложения — только сторонам.
+    diplomacy: state.diplomacy.map(t => ({
+      a: t.a, b: t.b, status: t.status, since: t.since, pending: t.pending,
+      proposal: t.proposal && (t.a === playerId || t.b === playerId) ? t.proposal : null,
+    })),
+    mode: structuredClone(state.mode),
   };
 }
 
