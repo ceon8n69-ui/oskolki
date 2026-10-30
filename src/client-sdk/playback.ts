@@ -4,7 +4,8 @@ import type { Coord, StoredEvent, TurnEvent } from '../shared/types.ts';
 
 export type StepKind =
   | 'fortify' | 'move' | 'blocked' | 'attack' | 'impact' | 'counter' | 'destroy' | 'attack_failed'
-  | 'contest' | 'contest_cleared' | 'capture' | 'recruit' | 'rank_up' | 'research' | 'income' | 'info';
+  | 'contest' | 'contest_cleared' | 'capture' | 'recruit' | 'rank_up' | 'research' | 'income' | 'info'
+  | 'build_start' | 'road' | 'route_paused';
 
 export interface PlaybackStep {
   id: number;
@@ -45,7 +46,11 @@ export function buildTimeline(events: StoredEvent[], myPlayerId: string, opts: T
 
   // Подготовка
   const prep = byPhase('prepare');
-  for (const e of prep) if (e.t === 'fortify') add('fortify', t, 400, e, e.at, false);
+  for (const e of prep) {
+    if (e.t === 'fortify') add('fortify', t, 400, e, e.at, false);
+    if (e.t === 'build_started') add('build_start', t, 400, e, e.at, mine(e.owner));
+    if (e.t === 'route_paused') add('route_paused', t, 400, e, e.at, true);
+  }
   if (prep.length) t += reduced ? 100 : 400;
 
   // Движение: шаги одного такта идут параллельно.
@@ -113,6 +118,7 @@ export function buildTimeline(events: StoredEvent[], myPlayerId: string, opts: T
   // Экономика
   for (const e of byPhase('economy')) {
     if (e.t === 'unit_recruited') add('recruit', t, 600, e, e.at, true);
+    if (e.t === 'road_built') add('road', t, 600, e, e.at, mine(e.by));
     if (e.t === 'research_completed') add('research', t, 600, e, null, true);
     if (e.t === 'income') add('income', t, 0, e, null, false);
   }

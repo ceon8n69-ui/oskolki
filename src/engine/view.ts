@@ -73,6 +73,33 @@ export function chunkView(state: GameState, playerId: PlayerId, cx: number, cy: 
   return { cx, cy, size: cs, terrain, features, visible };
 }
 
+/**
+ * Мини-карта: исследованная местность целиком (1 байт на клетку, 255 — неизвестно),
+ * известные города и свои отряды. Чужие отряды — только видимые сейчас.
+ */
+export function minimapView(b: Balance, state: GameState, playerId: PlayerId, vision: Vision): MinimapView {
+  const ex = state.explored[playerId];
+  const n = state.map.width * state.map.height;
+  const terrain = new Uint8Array(n);
+  for (let i = 0; i < n; i++) terrain[i] = ex && ex[i] ? state.map.terrain[i] : UNKNOWN_TILE;
+  const v = playerView(b, state, playerId, vision);
+  return {
+    width: state.map.width,
+    height: state.map.height,
+    terrain,
+    cities: v.cities.map(c => ({ x: c.x, y: c.y, owner: c.owner, isCapital: c.isCapital })),
+    units: v.units.map(u => ({ x: u.x, y: u.y, owner: u.owner })),
+  };
+}
+
+export interface MinimapView {
+  width: number;
+  height: number;
+  terrain: Uint8Array;
+  cities: { x: number; y: number; owner: string | null; isCapital: boolean }[];
+  units: { x: number; y: number; owner: string }[];
+}
+
 /** События хода, которые видит игрок. */
 export function eventsFor(events: StoredEvent[], playerId: PlayerId): StoredEvent[] {
   return events.filter(e => e.visibleTo.includes(playerId));

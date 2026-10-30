@@ -1,7 +1,8 @@
 // Проверка приказов. Вызывается при приёме приказа и повторно в начале расчёта хода.
 import type { Balance } from '../shared/balance.ts';
 import type { GameState, Order, PlayerId, PlayerState, SubmittedOrder } from '../shared/types.ts';
-import { dist, inBounds, sameTile } from './grid.ts';
+import { dist, featuresAt, idx, inBounds, isLandPassable, sameTile } from './grid.ts';
+import { Feature } from '../shared/types.ts';
 import { pathCost } from './path.ts';
 import type { Vision } from './vision.ts';
 import { canSeeUnit } from './vision.ts';
@@ -19,7 +20,10 @@ export function isUnitUnlocked(b: Balance, p: PlayerState, unitType: string): bo
 /** Золото, зарезервированное приказами найма (списывается при расчёте один раз). */
 export function reservedGold(b: Balance, orders: Order[]): number {
   let sum = 0;
-  for (const o of orders) if (o.kind === 'recruit') sum += b.units[o.unitType]?.cost.gold ?? 0;
+  for (const o of orders) {
+    if (o.kind === 'recruit') sum += b.units[o.unitType]?.cost.gold ?? 0;
+    if (o.kind === 'unit' && o.mode === 'build') sum += b.roads.goldCost;
+  }
   return sum;
 }
 
@@ -39,16 +43,34 @@ export function validateOrder(
       const unit = state.units.find(u => u.id === order.unitId);
       if (!unit || unit.hp <= 0) return { ok: false, reason: 'unit_not_found' };
       if (unit.owner !== playerId) return { ok: false, reason: 'not_owner' };
-      if (!['move', 'attack', 'hold'].includes(order.mode)) return { ok: false, reason: 'bad_mode' };
-      if (!Array.isArray(order.path) || order.path.length > 32) return { ok: false, reason: 'bad_path' };
+      if (!['move', 'attack', 'hold', 'build'].includes(order.mode)) return { ok: false, reason: 'bad_mode' };
+      const long = order.mode === 'move' && order.longRoute === true;
+      const maxLen = long ? b.routes.maxLength : 32;
+      if (!Array.isArray(order.path) || order.path.length > maxLen) return { ok: false, reason: 'bad_path' };
       if (order.mode === 'hold') {
         if (order.path.length) return { ok: false, reason: 'hold_has_path' };
+        return { ok: true };
+      }
+      if (order.mode === 'build') {
+        if (order.path.length) return { ok: false, reason: 'build_has_path' };
+        if (order.build !== 'road') return { ok: false, reason: 'unknown_build' };
+        if (!b.roads.builders.includes(unit.type)) return { ok: false, reason: 'unit_cannot_build' };
+        if (!isLandPassable(b, state.map, unit.x, unit.y)) return { ok: false, reason: 'impassable' };
+        if (featuresAt(state.map, unit.x, unit.y) & (Feature.Road | Feature.Bridge)) return { ok: false, reason: 'road_exists' };
+        const inTerritory = state.cities.some(c => c.owner === playerId && !c.contestedBy && dist(c, unit) <= b.roads.territoryRadius);
+        if (!inTerritory) return { ok: false, reason: 'outside_territory' };
+        const available = player.gold - reservedGold(b, otherOrders.filter(o => !(o.kind === 'unit' && o.unitId === unit.id)));
+        if (available < b.roads.goldCost) return { ok: false, reason: 'not_enough_gold' };
         return { ok: true };
       }
       for (const s of order.path) if (!inBounds(state.map, s.x, s.y)) return { ok: false, reason: 'out_of_bounds' };
       const pc = pathCost(b, state.map, unit, order.path);
       if (!pc.ok) return pc;
-      if (pc.cost > b.units[unit.type].move + 1e-9) return { ok: false, reason: 'not_enough_movement' };
+      if (long) {
+        // Маршрут прокладывается только по исследованным клеткам: иначе проверка раскрыла бы местность.
+        const ex = state.explored[playerId];
+        for (const s of order.path) if (!ex || !ex[idx(state.map, s.x, s.y)]) return { ok: false, reason: 'route_through_unexplored' };
+      } else if (pc.cost > b.units[unit.type].move + 1e-9) return { ok: false, reason: 'not_enough_movement' };
       // Нельзя прокладывать путь через видимых игроку чужих отрядов.
       // Невидимые отряды не учитываются — иначе проверка раскрыла бы их положение.
       for (const s of order.path) {

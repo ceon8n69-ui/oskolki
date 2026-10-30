@@ -62,6 +62,8 @@ export interface Balance {
   };
   economy: { startGold: number; deficitRecruitBlocked: boolean };
   capture: { holdTurns: number };
+  routes: { threatRadius: number; maxLength: number };
+  roads: { goldCost: number; builders: string[]; territoryRadius: number };
   techs: Record<string, TechRule>;
   factions: Record<string, { name: string; color: string; startUnits: string[] }>;
   turnPresets: Record<string, { planningSeconds: number; mapPreset: string }>;

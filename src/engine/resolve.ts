@@ -15,6 +15,8 @@ import { NEUTRAL } from '../shared/types.ts';
 import { canonicalize } from './canonical.ts';
 import { computeDamage, rankForXp } from './combat.ts';
 import { DIRS8, dist, idx, isLandPassable, landMoveCost } from './grid.ts';
+import { Feature } from '../shared/types.ts';
+import { planRoutes, updateRoutesAfterMove } from './routes.ts';
 import { hashParts, turnSeed } from './rng.ts';
 import { validateAll } from './validate.ts';
 import type { Vision } from './vision.ts';
@@ -71,6 +73,22 @@ export function resolveTurn(b: Balance, input: GameState, orders: SubmittedOrder
   }
   for (const u of state.units) u.countersUsed = 0;
 
+  // Строительство: золото списывается один раз при начале работ.
+  const builds = new Map<string, UnitState>();
+  for (const so of accepted) {
+    const o = so.order;
+    if (o.kind !== 'unit' || o.mode !== 'build') continue;
+    const u = state.units.find(x => x.id === o.unitId)!;
+    const p = state.players.find(pl => pl.id === so.playerId)!;
+    p.gold -= b.roads.goldCost;
+    builds.set(u.id, u);
+    log.push({ t: 'build_started', unitId: u.id, owner: u.owner, at: { x: u.x, y: u.y }, build: 'road', goldSpent: b.roads.goldCost }, visibleToUnitAt(b, state, vision0, u, u, players));
+  }
+
+  // Долгие маршруты: явный приказ заменяет маршрут; без приказа маршрут продолжается.
+  log.phase = 'prepare';
+  planRoutes(b, state, unitOrders, log, vision0);
+
   // ---------- 2. Подготовительные действия ----------
   log.phase = 'prepare';
   for (const u of state.units) {
@@ -87,10 +105,11 @@ export function resolveTurn(b: Balance, input: GameState, orders: SubmittedOrder
 
   // ---------- 3. Движение по шагам ----------
   log.phase = 'move';
-  resolveMovement(b, state, unitOrders, seed, log, vision0, players);
+  const moved = resolveMovement(b, state, unitOrders, seed, log, vision0, players);
 
   // ---------- 4. Видимость после движения ----------
   const vision1 = computeAllVision(b, state);
+  updateRoutesAfterMove(b, state, unitOrders, moved, log, vision1);
 
   // ---------- 5–7. Атаки по ступеням инициативы ----------
   log.phase = 'combat';
@@ -102,6 +121,17 @@ export function resolveTurn(b: Balance, input: GameState, orders: SubmittedOrder
 
   // ---------- 9. Экономика, производство, исследования ----------
   log.phase = 'economy';
+  for (const [id, u] of builds) {
+    const alive = state.units.find(x => x.id === id);
+    if (!alive || alive.x !== u.x || alive.y !== u.y) {
+      log.push({ t: 'build_failed', unitId: id, owner: u.owner, at: { x: u.x, y: u.y }, reason: alive ? 'moved' : 'destroyed' }, [u.owner]);
+      continue;
+    }
+    const i = idx(state.map, u.x, u.y);
+    state.map.features[i] |= Feature.Road;
+    const watchers = players.filter(p => vision1.get(p)!.visible[i]);
+    log.push({ t: 'road_built', at: { x: u.x, y: u.y }, by: u.owner }, [...watchers, u.owner]);
+  }
   resolveEconomy(b, state, log, players);
 
   // Выбывание
@@ -154,12 +184,12 @@ function resolveMovement(
   log: EventLog,
   vision0: Map<PlayerId, Vision>,
   players: PlayerId[],
-): void {
+): Map<string, { executed: number; blocked: string | null }> {
   const map = state.map;
   const occupant = new Map<number, UnitState>();
   for (const u of state.units) occupant.set(idx(map, u.x, u.y), u);
 
-  interface Mover { u: UnitState; path: Coord[]; step: number; spent: number; budget: number; stopped: boolean }
+  interface Mover { u: UnitState; path: Coord[]; step: number; spent: number; budget: number; stopped: boolean; blockedReason?: string }
   const movers: Mover[] = [];
   for (const u of state.units) {
     const o = unitOrders.get(u.id);
@@ -259,11 +289,13 @@ function resolveMovement(
     }
     for (const [m, reason] of blocked) {
       m.stopped = true;
+      m.blockedReason = reason;
       const wanted = want.get(m)!;
       // Причину «скрытое препятствие» видит только владелец; положение блокирующего не раскрывается.
       log.push({ t: 'move_blocked', unitId: m.u.id, owner: m.u.owner, at: { x: m.u.x, y: m.u.y }, wanted, tick, reason }, [m.u.owner]);
     }
   }
+  return new Map(movers.map(m => [m.u.id, { executed: m.step, blocked: m.blockedReason ?? null }]));
 }
 
 // ======================= Бой =======================

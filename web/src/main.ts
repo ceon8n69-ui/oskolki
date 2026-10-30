@@ -86,7 +86,7 @@ async function lobby() {
   client.close();
   const matches = await client.listMatches().catch(() => []);
   app.innerHTML = `<div class="screen"><h2>Осколки королевств</h2>
-    <div class="row"><button class="primary" data-p="quick">Быстрая партия (90 с)</button><button data-p="vsbot">Против бота</button><button data-p="async">Асинхронная (6 ч)</button></div>
+    <div class="row"><button class="primary" data-p="quick">Быстрая партия (90 с)</button><button data-p="vsbot">Против бота</button><button data-p="async">Асинхронная (6 ч)</button><button data-p="campaign">Кампания 256×256</button></div>
     <div class="row"><input id="code" placeholder="Код приглашения"><button id="join">Вступить</button></div>
     <h3>Мои партии</h3>
     ${matches.map(m => `<div class="card" data-m="${m.id}"><b>${esc(m.preset)}</b> · ${m.phase === 'lobby' ? `ожидание ${m.players.length}/${m.maxPlayers}` : m.phase === 'finished' ? 'завершена' : `ход ${m.turn}`}<br><span class="muted">${m.players.map(p => esc(p.name)).join(', ')}</span></div>`).join('') || '<p class="muted">Пока нет партий</p>'}
@@ -112,9 +112,19 @@ async function openMatch(id: string) {
     app.innerHTML = `<div class="screen"><h2>Ожидание игроков ${info.players.length}/${info.maxPlayers}</h2>
       <p>Пригласите соперника ссылкой:</p><div class="card" style="word-break:break-all">${esc(info.inviteLink)}</div>
       <p class="muted">Код: ${esc(info.inviteCode)}</p>
-      <div class="row"><button id="share">Поделиться</button><button id="refresh">Обновить</button><button id="back">Назад</button></div></div>`;
+      <div class="row"><button id="share">Поделиться</button><button id="startNow" class="primary">Начать сейчас</button><button id="refresh">Обновить</button><button id="back">Назад</button></div>
+      <p class="muted">Начать может создатель партии, когда игроков минимум двое.</p></div>`;
     document.getElementById('share')!.onclick = () => (tg?.openTelegramLink ? tg.openTelegramLink(`https://t.me/share/url?url=${encodeURIComponent(info.inviteLink)}`) : navigator.clipboard?.writeText(info.inviteLink).then(() => toast('Ссылка скопирована')));
     document.getElementById('refresh')!.onclick = () => openMatch(id);
+    document.getElementById('startNow')!.onclick = async () => {
+      try {
+        toast('Генерация мира…');
+        await client.startMatch(id);
+        openMatch(id);
+      } catch (e) {
+        toast(e instanceof ApiError ? e.code : String(e));
+      }
+    };
     document.getElementById('back')!.onclick = () => lobby();
     const unsub = client.on('match', m => m.phase !== 'lobby' && (unsub(), openMatch(id)));
     client.matchId = id;
@@ -140,6 +150,7 @@ let logLines: string[] = [];
 async function gameScreen() {
   app.innerHTML = `<canvas id="map"></canvas>
     <div class="top" id="top"></div>
+    <canvas id="mini" width="120" height="120" style="position:fixed;right:8px;top:52px;z-index:2;border:1px solid #fff4;border-radius:6px;background:#000a;width:120px;height:120px"></canvas>
     <div class="bottom">
       <button id="bResearch">Исследования</button><button id="bCities">Города</button><button id="bArmy">Армия</button><button id="bLog">Журнал</button>
       <span class="spacer"></span><button class="primary" id="bReady">Готов</button>
@@ -153,6 +164,14 @@ async function gameScreen() {
   if (cap) cam = { ...cam, x: cap.x, y: cap.y };
   await loadVisibleChunks();
   bindInput();
+  void drawMinimap();
+  const mini = document.getElementById('mini') as HTMLCanvasElement;
+  mini.onclick = e => {
+    const r = mini.getBoundingClientRect();
+    const v = client.state!.view.map;
+    cam = { ...cam, x: ((e.clientX - r.left) / r.width) * v.width, y: ((e.clientY - r.top) / r.height) * v.height };
+    void loadVisibleChunks();
+  };
   document.getElementById('bReady')!.onclick = async () => {
     const me = client.state!.match.players.find(p => p.id === client.state!.view.me.id)!;
     const r = await client.setReady(!me.ready);
@@ -181,6 +200,35 @@ async function gameScreen() {
   renderHud();
   requestAnimationFrame(frame);
   setInterval(renderHud, 1000);
+}
+
+async function drawMinimap() {
+  const mini = document.getElementById('mini') as HTMLCanvasElement | null;
+  if (!mini) return;
+  const mm = await client.minimap().catch(() => null);
+  if (!mm) return;
+  const c = mini.getContext('2d')!;
+  const img = c.createImageData(mm.width, mm.height);
+  const rgb: Record<number, number[]> = { 0: [31, 78, 121], 1: [47, 111, 159], 2: [143, 179, 107], 3: [63, 122, 70], 4: [169, 154, 99], 5: [125, 127, 134], 255: [13, 16, 19] };
+  for (let i = 0; i < mm.terrain.length; i++) {
+    const [r, g, bb] = rgb[mm.terrain[i]] ?? rgb[255];
+    img.data.set([r, g, bb, 255], i * 4);
+  }
+  const off = new OffscreenCanvas(mm.width, mm.height);
+  off.getContext('2d')!.putImageData(img, 0, 0);
+  c.imageSmoothingEnabled = false;
+  c.clearRect(0, 0, 120, 120);
+  c.drawImage(off, 0, 0, 120, 120);
+  const sx = 120 / mm.width, sy = 120 / mm.height;
+  const st = client.state!;
+  for (const ct of mm.cities) {
+    c.fillStyle = st.view.players.find(p => p.id === ct.owner)?.color ?? '#ddd';
+    c.fillRect(ct.x * sx - 2, ct.y * sy - 2, 4, 4);
+  }
+  for (const u of mm.units) {
+    c.fillStyle = st.view.players.find(p => p.id === u.owner)?.color ?? '#999';
+    c.fillRect(u.x * sx - 1, u.y * sy - 1, 2, 2);
+  }
 }
 
 function resize() {
@@ -231,10 +279,13 @@ function renderSheet() {
     el.innerHTML = `<div class="sheet"><h3>${esc(rule.name)} ${mineU ? '' : `· ${esc(st.view.players.find(p => p.id === u.owner)?.name ?? 'нейтрал')}`}</h3>
       <div>❤ ${u.hp} · ⚔ ${rule.attack} · ⛨ ${rule.defense} · ➜ ${rule.move} · ◎ ${rule.range} · инициатива ${rule.initiative} · ранг ${u.rank}${u.statuses.length ? ' · ' + u.statuses.map(s => s.id).join(', ') : ''}</div>
       ${mineU ? `<div class="muted">Приказ: ${ord ? describeOrder(ord.order) : 'нет (удержание без укрепления)'}</div>
-      <div class="row"><button id="uHold">Укрепиться</button>${ord ? '<button id="uCancel">Отменить приказ</button>' : ''}</div>
-      <div class="muted">Нажмите подсвеченную клетку — движение; противника — атака.</div>` : ''}</div>`;
+      ${u.route?.path?.length ? `<div class="muted">Долгий маршрут: осталось ${u.route.path.length} шаг.${u.route.stopOnThreat ? ', остановка при угрозе' : ''}</div>` : ''}
+      <div class="row"><button id="uHold">Укрепиться</button>${BALANCE.roads.builders.includes(u.type) ? `<button id="uRoad">Дорога · ${BALANCE.roads.goldCost}◉</button>` : ''}${ord ? '<button id="uCancel">Отменить приказ</button>' : ''}</div>
+      <div class="muted">Подсвеченная клетка — движение в этот ход; дальняя исследованная клетка — маршрут на несколько ходов; противник — атака.</div>` : ''}</div>`;
     if (mineU) {
       document.getElementById('uHold')!.onclick = () => submit(client.hold(u.id));
+      const road = document.getElementById('uRoad');
+      if (road) road.onclick = () => submit(client.buildRoad(u.id));
       const c = document.getElementById('uCancel');
       if (c) c.onclick = () => client.cancel(`unit:${u.id}`);
     }
@@ -274,6 +325,8 @@ function renderSheet() {
 
 function describeOrder(o: any): string {
   if (o.mode === 'hold') return 'удержание (укрепление)';
+  if (o.mode === 'build') return 'строительство дороги';
+  if (o.longRoute) return `маршрут (${o.path.length} шаг.)`;
   if (o.mode === 'move') return `движение (${o.path.length} шаг.)`;
   return `атака${o.path.length ? ` после ${o.path.length} шаг.` : ''}`;
 }
@@ -585,6 +638,19 @@ async function tap(t: Coord) {
     if (p) await submit(client.move(sel.id, p));
     return;
   }
+  if (sel && !here) {
+    const tt = client.tile(t.x, t.y);
+    if (tt && tt.terrain !== 255) {
+      const map = localMap();
+      const blocked = new Set(st.view.units.filter(u => u.owner !== st.view.me.id).map(u => u.y * map.width + u.x));
+      const p = findPath(BALANCE, map, sel, t, { blocked });
+      if (p && p.length <= BALANCE.routes.maxLength) {
+        if (confirm(`Маршрут на несколько ходов: ${p.length} шаг. Остановиться, если рядом появится противник?\nОК — да, Отмена — идти без остановки.`)) await submit(client.longRoute(sel.id, p, true));
+        else await submit(client.longRoute(sel.id, p, false));
+        return;
+      }
+    }
+  }
   if (here) return select(here.id);
   const city = st.view.cities.find(c => c.x === t.x && c.y === t.y && c.owner === st.view.me.id);
   if (city) {
@@ -597,6 +663,7 @@ async function tap(t: Coord) {
 // ---------- воспроизведение результатов ----------
 function startPlayback(turn: number, events: StoredEvent[], before: StateResponse | null, after: StateResponse) {
   logEvents(events, turn);
+  void drawMinimap();
   selected = null;
   moveTiles = [];
   void loadVisibleChunks();
@@ -622,6 +689,10 @@ function logEvents(events: StoredEvent[], turn?: number) {
       e.t === 'move_blocked' ? `Движение остановлено (${e.reason})` :
       e.t === 'attack_failed' ? `Атака не состоялась (${e.reason})` :
       e.t === 'order_rejected' ? `Приказ отклонён (${REASONS[e.reason] ?? e.reason})` :
+      e.t === 'road_built' ? `Построена дорога (${e.at.x},${e.at.y})` :
+      e.t === 'route_paused' ? `Маршрут остановлен (${e.reason === 'threat' ? 'угроза рядом' : e.reason === 'blocked' ? 'путь перекрыт' : 'путь недоступен'})` :
+      e.t === 'route_completed' ? 'Маршрут завершён' :
+      e.t === 'build_failed' ? `Строительство сорвано (${e.reason})` :
       e.t === 'income' ? `Доход +${e.gold}, содержание −${e.upkeep}${e.deficit ? ' — ДЕФИЦИТ' : ''}` : null;
     if (line) logLines.push(`[${turn ?? '?'}] ${line}`);
   }

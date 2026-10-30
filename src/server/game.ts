@@ -12,9 +12,10 @@ import { computeVision } from '../engine/vision.ts';
 import { playerView } from '../engine/view.ts';
 import { GENERATOR_VERSION } from '../worldgen/generate.ts';
 import { createInitialState } from '../worldgen/setup.ts';
+import { generateWorldAsync } from '../worldgen/async.ts';
 import type { Db, Tx } from './db/pool.ts';
 import { withTx } from './db/pool.ts';
-import { loadState, saveMap, saveState, stateHash, stateToJson } from './store.ts';
+import { loadState, loadStateCached, saveMap, saveState, saveTileChanges, setCachedMap, setCachedState, stateHash, stateToJson } from './store.ts';
 
 export class GameError extends Error {
   code: string;
@@ -97,6 +98,14 @@ export class GameService extends EventEmitter {
 
   /** Старт: генерация мира, начальное состояние, первый ход. */
   async startMatch(matchId: string, byUserId?: number): Promise<void> {
+    // Мир зависит только от seed и пресета, поэтому строится заранее, в отдельном потоке и вне транзакции.
+    const { rows: [pre] } = await this.db.query('SELECT preset, seed, phase FROM matches WHERE id=$1', [matchId]);
+    if (!pre) throw new GameError('match_not_found', 404);
+    if (pre.phase !== 'lobby') return;
+    const preMp = this.b.map.presets[this.b.turnPresets[pre.preset].mapPreset];
+    const world = await generateWorldAsync({ ...preMp, seed: pre.seed });
+    if (!world.report.ok) throw new GameError('worldgen_failed', 500);
+    let started: GameState | null = null;
     await withTx(this.db, async tx => {
       const { rows: [m] } = await tx.query('SELECT * FROM matches WHERE id=$1 FOR UPDATE', [matchId]);
       if (!m) throw new GameError('match_not_found', 404);
@@ -104,14 +113,13 @@ export class GameService extends EventEmitter {
       if (byUserId !== undefined && m.created_by !== byUserId) throw new GameError('only_creator_can_start', 403);
       const { rows: pl } = await tx.query('SELECT * FROM players WHERE match_id=$1 ORDER BY seat', [matchId]);
       if (pl.length < 2) throw new GameError('not_enough_players', 409);
-      const tp = this.b.turnPresets[m.preset];
-      const mp = this.b.map.presets[tp.mapPreset];
-      const { state, world } = createInitialState(this.b, {
+      if (pl.length > world.capitals.length) throw new GameError('too_many_players', 409);
+      const { state } = createInitialState(this.b, {
         matchId,
-        spec: { ...mp, players: Math.max(pl.length, 2), seed: m.seed },
+        spec: { ...preMp, seed: m.seed },
+        world,
         players: pl.map(p => ({ id: p.id, name: p.name, faction: p.faction, isBot: p.is_bot })),
       });
-      if (!world.report.ok) throw new GameError('worldgen_failed', 500);
       for (const p of state.players) await tx.query('UPDATE players SET color=$3 WHERE match_id=$1 AND id=$2', [matchId, p.id, p.color]);
       await saveMap(tx, matchId, world.map);
       await saveState(tx, state);
@@ -122,7 +130,10 @@ export class GameService extends EventEmitter {
       );
       await tx.query('INSERT INTO turns (id, match_id, number, status, snapshot) VALUES ($1,$2,1,$3,$4)', [randomUUID(), matchId, 'planning', JSON.stringify(stateToJson(state))]);
       await this.log(tx, matchId, byUserId ? `user:${byUserId}` : 'system', 'match_started', { report: world.report.ok });
+      started = state;
     });
+    const st = started as GameState | null;
+    if (st) setCachedState(st);
     this.emit('match_changed', matchId);
   }
 
@@ -165,7 +176,7 @@ export class GameService extends EventEmitter {
     const match = await this.matchInfo(matchId);
     if (match.phase === 'lobby') throw new GameError('match_not_started', 409);
     const playerId = await this.playerIdFor(matchId, userId);
-    const state = await loadState(this.db, matchId);
+    const state = await loadStateCached(this.db, matchId);
     const orders = await this.activeOrders(this.db, matchId, state.turn, playerId);
     return {
       match,
@@ -204,7 +215,7 @@ export class GameService extends EventEmitter {
       }
       if (m.phase !== 'planning') return { ok: false, reason: 'not_planning' };
       if (req.turn !== m.turn) return { ok: false, reason: 'turn_closed' };
-      const state = await loadState(tx, matchId);
+      const state = await loadStateCached(tx, matchId, m.turn);
       const subject = orderSubjectKey(order);
       const current = await this.activeOrders(tx, matchId, m.turn, playerId);
       const existing = current.find(o => o.subject === subject);
@@ -271,6 +282,7 @@ export class GameService extends EventEmitter {
    */
   async processTurn(matchId: string, expectedTurn?: number): Promise<TurnResolvedInfo | null> {
     const t0 = performance.now();
+    let resolvedState: GameState | null = null;
     const result = await withTx(this.db, async tx => {
       const { rows } = await tx.query('SELECT * FROM matches WHERE id=$1 FOR UPDATE SKIP LOCKED', [matchId]);
       const m = rows[0];
@@ -285,6 +297,9 @@ export class GameService extends EventEmitter {
       }
       const { state: next, events } = resolveTurn(this.b, state, orders);
       await saveState(tx, next);
+      const roads = events.flatMap(e => (e.event.t === 'road_built' ? [e.event.at] : []));
+      if (roads.length) await saveTileChanges(tx, matchId, next.map, roads, m.turn);
+      resolvedState = next;
       if (events.length) {
         await tx.query(
           `INSERT INTO turn_events (match_id, turn, seq, phase, visible_to, event)
@@ -311,7 +326,12 @@ export class GameService extends EventEmitter {
       await this.queueTurnNotifications(tx, matchId, m.turn, state, events, finished, winner);
       return { matchId, turn: m.turn, events, finished, winner } satisfies TurnResolvedInfo;
     });
-    // Публикуем только после фиксации транзакции.
+    // Публикуем и кешируем только после фиксации транзакции.
+    const rs = resolvedState as GameState | null; // присваивается внутри транзакции
+    if (result && rs) {
+      setCachedMap(matchId, rs.map);
+      setCachedState(rs);
+    }
     if (result) this.emit('turn_resolved', result);
     return result;
   }
@@ -345,9 +365,11 @@ export function sanitizeOrder(o: any): Order {
         kind: 'unit',
         unitId: String(o.unitId ?? ''),
         mode: o.mode,
-        path: Array.isArray(o.path) ? o.path.slice(0, 64).map(coord) : [],
+        path: Array.isArray(o.path) ? o.path.slice(0, 200).map(coord) : [],
         ...(o.targetUnitId ? { targetUnitId: String(o.targetUnitId) } : {}),
         ...(o.targetTile ? { targetTile: coord(o.targetTile) } : {}),
+        ...(o.longRoute === true ? { longRoute: true, stopOnThreat: o.stopOnThreat !== false } : {}),
+        ...(o.mode === 'build' ? { build: o.build === 'road' ? 'road' : (String(o.build) as 'road') } : {}),
       };
     case 'recruit':
       return { kind: 'recruit', cityId: String(o.cityId ?? ''), unitType: String(o.unitType ?? '') };

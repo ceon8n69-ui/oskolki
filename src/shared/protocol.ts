@@ -1,5 +1,5 @@
 // Протокол клиент ↔ сервер. Клиентский рендерер работает только с этими типами.
-import type { CityId, Order, PlayerId, PlayerState, ProductionItem, StatusEffect, StoredEvent, UnitId } from './types.ts';
+import type { CityId, Order, PlayerId, PlayerState, ProductionItem, StatusEffect, StoredEvent, UnitId, UnitRoute } from './types.ts';
 
 export const PROTOCOL_VERSION = 1;
 
@@ -13,6 +13,7 @@ export interface ViewUnit {
   rank: number;
   statuses: StatusEffect[];
   xp?: number; // только свои
+  route?: UnitRoute | null; // только свои: долгий маршрут
   stale: false;
 }
 

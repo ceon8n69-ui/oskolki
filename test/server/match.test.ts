@@ -11,7 +11,7 @@ import { migrate } from '../../src/server/db/migrate.ts';
 import { createPool } from '../../src/server/db/pool.ts';
 import type { Db } from '../../src/server/db/pool.ts';
 import { GameService } from '../../src/server/game.ts';
-import { loadState, stateFromJson, stateHash } from '../../src/server/store.ts';
+import { invalidateCachedState, loadState, stateFromJson, stateHash } from '../../src/server/store.ts';
 import { resolveTurn } from '../../src/engine/resolve.ts';
 
 const URL_TEST = process.env.DATABASE_URL_TEST ?? 'postgres://oskolki:oskolki@localhost:5432/oskolki_test';
@@ -215,3 +215,71 @@ async function assertReplayable(matchId: string, turn: number) {
   const { state } = resolveTurn(BALANCE, snap, orders);
   assert.equal(stateHash(state), t.result_hash, `ход ${turn} не воспроизводится`);
 }
+
+test('этап 2: дорога сохраняется в БД, мини-карта, маршрут переживает перезагрузку состояния', async () => {
+  const t1 = await devLogin('Дана');
+  const m = (await call('POST', '/api/matches', t1, { preset: 'vsbot' })).json;
+  const s = (await call<StateResponse>('GET', `/api/matches/${m.id}/state`, t1)).json;
+  const inf = s.view.units.find(u => u.owner === s.view.me.id && u.type === 'infantry')!;
+  const r = await call('POST', `/api/matches/${m.id}/orders`, t1, { turn: 1, order: { kind: 'unit', unitId: inf.id, mode: 'build', build: 'road', path: [] }, idempotencyKey: randomUUID() });
+  assert.equal(r.json.ok, true, JSON.stringify(r.json));
+  assert.equal(r.json.reserved.gold, BALANCE.roads.goldCost);
+  // Разведчик: долгий маршрут по исследованным клеткам.
+  const sc = s.view.units.find(u => u.owner === s.view.me.id && u.type === 'scout')!;
+  // Открываем игроку всю карту (как будто он её разведал), чтобы проложить длинный маршрут.
+  await db.query(`UPDATE visibility SET explored = decode(repeat('ff', 128), 'hex') WHERE match_id=$1 AND player_id=$2`, [m.id, s.view.me.id]);
+  invalidateCachedState(m.id);
+  const st0 = await loadState(db, m.id);
+  const { findPath, pathCost } = await import('../../src/engine/path.ts');
+  const ex = st0.explored[s.view.me.id];
+  let far: { x: number; y: number } | null = null;
+  for (let i = ex.length - 1; i >= 0 && !far; i--) {
+    if (!ex[i]) continue;
+    const c = { x: i % st0.map.width, y: Math.floor(i / st0.map.width) };
+    const p = findPath(BALANCE, st0.map, sc, c);
+    if (p && pathCost(BALANCE, st0.map, sc, p).ok && (pathCost(BALANCE, st0.map, sc, p) as any).cost > BALANCE.units.scout.move && p.every(q => ex[q.y * st0.map.width + q.x]) && !st0.units.some(u => p.some(q => q.x === u.x && q.y === u.y))) far = c;
+  }
+  assert.ok(far, 'не найдена дальняя исследованная клетка');
+  if (far) {
+    const p = findPath(BALANCE, st0.map, sc, far)!;
+    const rr = await call('POST', `/api/matches/${m.id}/orders`, t1, { turn: 1, order: { kind: 'unit', unitId: sc.id, mode: 'move', longRoute: true, stopOnThreat: false, path: p }, idempotencyKey: randomUUID() });
+    assert.equal(rr.json.ok, true, JSON.stringify(rr.json));
+  }
+  await call('POST', `/api/matches/${m.id}/ready`, t1, { turn: 1, ready: true });
+  assert.ok(await game.processTurn(m.id, 1));
+  const { rows } = await db.query('SELECT x, y, features FROM tiles WHERE match_id=$1', [m.id]);
+  assert.equal(rows.length, 1);
+  assert.deepEqual([rows[0].x, rows[0].y], [inf.x, inf.y]);
+  // Загрузка с диска (мимо кеша) видит дорогу и маршрут.
+  const fresh = await loadState(db, m.id);
+  assert.ok(fresh.map.features[inf.y * fresh.map.width + inf.x] & 1);
+  if (far) assert.ok(fresh.units.find(u => u.id === sc.id)!.route, 'маршрут должен сохраниться');
+  const mm = (await call('GET', `/api/matches/${m.id}/minimap`, t1)).json;
+  assert.equal(mm.width, 32);
+  assert.ok(mm.cities.length >= 1);
+  // Ход 1 не сверяем: тест вручную менял видимость после снимка. Ход 2 (с продолжением маршрута) — сверяем.
+  await call('POST', `/api/matches/${m.id}/ready`, t1, { turn: 2, ready: true });
+  const r2 = await game.processTurn(m.id, 2);
+  assert.ok(r2);
+  assert.ok(r2!.events.some(e => e.event.t === 'route_continued' || e.event.t === 'route_completed' || e.event.t === 'route_paused'));
+  await assertReplayable(m.id, 2);
+});
+
+test('этап 2: кампания 256×256 стартует, генерация в отдельном потоке', async () => {
+  const t1 = await devLogin('Ева');
+  const t2 = await devLogin('Жора');
+  const m = (await call('POST', '/api/matches', t1, { preset: 'campaign' })).json;
+  assert.equal(m.maxPlayers, 32);
+  await call('POST', '/api/matches/join', t2, { inviteCode: m.inviteCode });
+  assert.equal((await call('POST', `/api/matches/${m.id}/start`, t2)).status, 403);
+  const started = await call('POST', `/api/matches/${m.id}/start`, t1);
+  assert.equal(started.json.phase, 'planning');
+  const s = (await call<StateResponse>('GET', `/api/matches/${m.id}/state`, t1)).json;
+  assert.equal(s.view.map.width, 256);
+  const { rows: [c] } = await db.query('SELECT count(*)::int n FROM chunks WHERE match_id=$1', [m.id]);
+  assert.equal(c.n, 256);
+  await call('POST', `/api/matches/${m.id}/ready`, t1, { turn: 1, ready: true });
+  await call('POST', `/api/matches/${m.id}/ready`, t2, { turn: 1, ready: true });
+  assert.ok(await game.processTurn(m.id, 1));
+  await assertReplayable(m.id, 1);
+});
