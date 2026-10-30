@@ -1,0 +1,217 @@
+// Интеграционные тесты сервера на реальной PostgreSQL (DATABASE_URL_TEST).
+import { test, before, after } from 'node:test';
+import assert from 'node:assert/strict';
+import { randomUUID } from 'node:crypto';
+import { BALANCE } from '../../src/shared/balance.ts';
+import type { StateResponse } from '../../src/shared/protocol.ts';
+import { buildApp } from '../../src/server/app.ts';
+import { signInitData } from '../../src/server/auth.ts';
+import { loadConfig } from '../../src/server/config.ts';
+import { migrate } from '../../src/server/db/migrate.ts';
+import { createPool } from '../../src/server/db/pool.ts';
+import type { Db } from '../../src/server/db/pool.ts';
+import { GameService } from '../../src/server/game.ts';
+import { loadState, stateFromJson, stateHash } from '../../src/server/store.ts';
+import { resolveTurn } from '../../src/engine/resolve.ts';
+
+const URL_TEST = process.env.DATABASE_URL_TEST ?? 'postgres://oskolki:oskolki@localhost:5432/oskolki_test';
+const BOT_TOKEN = '123456:TEST-TOKEN';
+let db: Db;
+let game: GameService;
+let app: Awaited<ReturnType<typeof buildApp>>;
+
+before(async () => {
+  db = createPool(URL_TEST);
+  await db.query('DROP SCHEMA public CASCADE; CREATE SCHEMA public;');
+  await migrate(db, () => {});
+  game = new GameService(db, BALANCE);
+  const cfg = loadConfig({ NODE_ENV: 'test', DEV_AUTH: '1', BOT_TOKEN, ADMIN_TOKEN: 'admin-secret' } as any);
+  app = await buildApp({ cfg, db, game, b: BALANCE });
+});
+after(async () => {
+  await app.close();
+  await db.end();
+});
+
+async function call<T = any>(method: string, url: string, token?: string, body?: unknown): Promise<{ status: number; json: T }> {
+  const r = await app.inject({ method: method as any, url, headers: token ? { authorization: `Bearer ${token}` } : {}, payload: body as any });
+  return { status: r.statusCode, json: r.json() as T };
+}
+async function devLogin(name: string): Promise<string> {
+  return (await call('POST', '/api/auth/dev', undefined, { name })).json.token;
+}
+
+test('авторизация Telegram: подпись проверяется, подделка отклоняется', async () => {
+  const fields = { auth_date: String(Math.floor(Date.now() / 1000)), user: JSON.stringify({ id: 777, first_name: 'Тарас' }), start_param: 'join_abc' };
+  const ok = await call('POST', '/api/auth/telegram', undefined, { initData: signInitData(fields, BOT_TOKEN) });
+  assert.equal(ok.status, 200);
+  assert.equal(ok.json.startParam, 'join_abc');
+  const forged = signInitData({ ...fields, user: JSON.stringify({ id: 1, first_name: 'X' }) }, 'other:token');
+  assert.equal((await call('POST', '/api/auth/telegram', undefined, { initData: forged })).status, 401);
+  const old = signInitData({ ...fields, auth_date: String(Math.floor(Date.now() / 1000) - 200000) }, BOT_TOKEN);
+  assert.equal((await call('POST', '/api/auth/telegram', undefined, { initData: old })).json.error, 'initdata_expired');
+  assert.equal((await call('GET', '/api/matches', 'v1.bad.token')).status, 401);
+});
+
+test('полный цикл: два игрока, приказы, готовность, расчёт, переподключение', async () => {
+  const t1 = await devLogin('Алиса');
+  const t2 = await devLogin('Борис');
+  const created = await call('POST', '/api/matches', t1, { preset: 'quick' });
+  assert.equal(created.status, 200);
+  const matchId = created.json.id;
+  assert.equal(created.json.phase, 'lobby');
+  // Чужой игрок не видит партию до вступления.
+  assert.equal((await call('GET', `/api/matches/${matchId}/state`, t2)).status, 409);
+  const joined = await call('POST', '/api/matches/join', t2, { inviteCode: created.json.inviteCode });
+  assert.equal(joined.json.phase, 'planning');
+  // Повторный переход по ссылке не создаёт второго игрока.
+  assert.equal((await call('POST', '/api/matches/join', t2, { inviteCode: created.json.inviteCode })).json.players.length, 2);
+
+  const s1 = (await call<StateResponse>('GET', `/api/matches/${matchId}/state`, t1)).json;
+  const s2 = (await call<StateResponse>('GET', `/api/matches/${matchId}/state`, t2)).json;
+  assert.equal(s1.view.turn, 1);
+  const myUnits = s1.view.units.filter(u => u.owner === s1.view.me.id);
+  assert.ok(myUnits.length >= 2);
+  // Игрок не видит отрядов противника за пределами обзора.
+  assert.ok(!s1.view.units.some(u => s2.view.units.find(x => x.id === u.id && x.owner === s2.view.me.id)));
+
+  // Чанки: неисследованные клетки скрыты.
+  const ch = (await call('GET', `/api/matches/${matchId}/chunks?list=0,0;1,0;0,1;1,1`, t1)).json;
+  assert.equal(ch.chunks.length, 4);
+  const unknown = ch.chunks.flatMap((c: any) => c.terrain).filter((t: number) => t === 255).length;
+  assert.ok(unknown > 0);
+
+  // Приказ движения + идемпотентность.
+  const unit = myUnits.find(u => u.type === 'scout')!;
+  const moves = (await call('GET', `/api/matches/${matchId}/preview/moves?unitId=${unit.id}`, t1)).json.tiles;
+  assert.ok(moves.length > 0);
+  const dest = moves.sort((a: any, b: any) => b.cost - a.cost)[0];
+  const route = await findRoute(matchId, unit.id, dest);
+  const key = randomUUID();
+  const o1 = await call('POST', `/api/matches/${matchId}/orders`, t1, { turn: 1, order: { kind: 'unit', unitId: unit.id, mode: 'move', path: route }, idempotencyKey: key });
+  assert.equal(o1.json.ok, true, JSON.stringify(o1.json));
+  const o1again = await call('POST', `/api/matches/${matchId}/orders`, t1, { turn: 1, order: { kind: 'unit', unitId: unit.id, mode: 'move', path: route }, idempotencyKey: key });
+  assert.equal(o1again.json.order.id, o1.json.order.id);
+  // Изменение приказа повышает версию; устаревшая версия отклоняется.
+  const o2 = await call('POST', `/api/matches/${matchId}/orders`, t1, { turn: 1, order: { kind: 'unit', unitId: unit.id, mode: 'hold', path: [] }, idempotencyKey: randomUUID(), baseVersion: 1 });
+  assert.equal(o2.json.order.version, 2);
+  const stale = await call('POST', `/api/matches/${matchId}/orders`, t1, { turn: 1, order: { kind: 'unit', unitId: unit.id, mode: 'hold', path: [] }, idempotencyKey: randomUUID(), baseVersion: 1 });
+  assert.equal(stale.json.reason, 'version_conflict');
+  await call('POST', `/api/matches/${matchId}/orders`, t1, { turn: 1, order: { kind: 'unit', unitId: unit.id, mode: 'move', path: route }, idempotencyKey: randomUUID() });
+  // Приказ чужому отряду отклоняется.
+  const theirs = s2.view.units.find(u => u.owner === s2.view.me.id)!;
+  const bad = await call('POST', `/api/matches/${matchId}/orders`, t1, { turn: 1, order: { kind: 'unit', unitId: theirs.id, mode: 'hold', path: [] }, idempotencyKey: randomUUID() });
+  assert.equal(bad.json.reason, 'not_owner');
+
+  // Найм: резерв золота и освобождение при отмене.
+  const cap = s1.view.cities.find(c => c.owner === s1.view.me.id)!;
+  const rec = await call('POST', `/api/matches/${matchId}/orders`, t1, { turn: 1, order: { kind: 'recruit', cityId: cap.id, unitType: 'infantry' }, idempotencyKey: randomUUID() });
+  assert.equal(rec.json.reserved.gold, BALANCE.units.infantry.cost.gold);
+  await call('DELETE', `/api/matches/${matchId}/orders?subject=recruit:${cap.id}&turn=1`, t1);
+  assert.equal((await call<StateResponse>('GET', `/api/matches/${matchId}/state`, t1)).json.reserved.gold, 0);
+  await call('POST', `/api/matches/${matchId}/orders`, t1, { turn: 1, order: { kind: 'recruit', cityId: cap.id, unitType: 'infantry' }, idempotencyKey: randomUUID() });
+
+  // Готовность обоих → ход рассчитывается.
+  await call('POST', `/api/matches/${matchId}/ready`, t1, { turn: 1, ready: true });
+  await call('POST', `/api/matches/${matchId}/ready`, t2, { turn: 1, ready: true });
+  const due = await game.dueMatches();
+  assert.ok(due.some(d => d.id === matchId));
+  // Два обработчика одновременно — ход рассчитывается ровно один раз.
+  const [r1, r2] = await Promise.all([game.processTurn(matchId, 1), game.processTurn(matchId, 1)]);
+  assert.equal([r1, r2].filter(Boolean).length, 1);
+  assert.equal((await game.processTurn(matchId, 1)), null);
+
+  // Приказ на закрытый ход отклоняется.
+  const late = await call('POST', `/api/matches/${matchId}/orders`, t1, { turn: 1, order: { kind: 'unit', unitId: unit.id, mode: 'hold', path: [] }, idempotencyKey: randomUUID() });
+  assert.equal(late.json.reason, 'turn_closed');
+
+  // «Переподключение»: новое чтение состояния отражает результат.
+  const after1 = (await call<StateResponse>('GET', `/api/matches/${matchId}/state`, t1)).json;
+  assert.equal(after1.view.turn, 2);
+  const moved = after1.view.units.find(u => u.id === unit.id)!;
+  assert.deepEqual([moved.x, moved.y], [route[route.length - 1].x, route[route.length - 1].y]);
+  const ev = (await call('GET', `/api/matches/${matchId}/events?turn=1`, t1)).json.events;
+  const inc = ev.find((e: any) => e.event.t === 'income').event;
+  assert.equal(after1.view.me.gold, BALANCE.economy.startGold - BALANCE.units.infantry.cost.gold + inc.gold - inc.upkeep);
+  assert.ok(ev.some((e: any) => e.event.t === 'move' && e.event.unitId === unit.id));
+  // События противника, которых игрок не видел, ему не отдаются.
+  const ev2 = (await call('GET', `/api/matches/${matchId}/events?turn=1`, t2)).json.events;
+  assert.ok(!ev2.some((e: any) => e.event.t === 'production_queued'));
+
+  // Воспроизводимость: снимок хода 1 + те же приказы → тот же хэш результата.
+  await assertReplayable(matchId, 1);
+});
+
+test('сбой во время расчёта не списывает ресурсы повторно', async () => {
+  const t1 = await devLogin('Вера');
+  const m = (await call('POST', '/api/matches', t1, { preset: 'vsbot' })).json;
+  assert.equal(m.phase, 'planning');
+  const s = (await call<StateResponse>('GET', `/api/matches/${m.id}/state`, t1)).json;
+  const cap = s.view.cities.find(c => c.owner === s.view.me.id)!;
+  await call('POST', `/api/matches/${m.id}/orders`, t1, { turn: 1, order: { kind: 'recruit', cityId: cap.id, unitType: 'infantry' }, idempotencyKey: randomUUID() });
+  const gold0 = s.view.me.gold;
+
+  // Ломаем запись событий посреди транзакции.
+  const orig = (game as any).queueTurnNotifications;
+  (game as any).queueTurnNotifications = async () => {
+    throw new Error('simulated crash');
+  };
+  await assert.rejects(game.processTurn(m.id, 1), /simulated crash/);
+  (game as any).queueTurnNotifications = orig;
+  const mid = (await call<StateResponse>('GET', `/api/matches/${m.id}/state`, t1)).json;
+  assert.equal(mid.view.turn, 1);
+  assert.equal(mid.view.me.gold, gold0);
+  assert.equal(mid.orders.length, 1);
+
+  const r = await game.processTurn(m.id, 1);
+  assert.ok(r);
+  const after = (await call<StateResponse>('GET', `/api/matches/${m.id}/state`, t1)).json;
+  assert.equal(after.view.turn, 2);
+  const queued = r!.events.filter(e => e.event.t === 'production_queued' && e.event.owner === s.view.me.id);
+  assert.equal(queued.length, 1);
+  const income = r!.events.find(e => e.event.t === 'income' && e.event.playerId === s.view.me.id)!.event as any;
+  assert.equal(after.view.me.gold, gold0 - BALANCE.units.infantry.cost.gold + income.gold - income.upkeep);
+});
+
+test('бот-противник отдаёт приказы и партия идёт несколько ходов', async () => {
+  const t1 = await devLogin('Гена');
+  const m = (await call('POST', '/api/matches', t1, { preset: 'vsbot' })).json;
+  for (let turn = 1; turn <= 6; turn++) {
+    await call('POST', `/api/matches/${m.id}/ready`, t1, { turn, ready: true });
+    const r = await game.processTurn(m.id, turn);
+    assert.ok(r, `ход ${turn} не рассчитан`);
+  }
+  const s = (await call<StateResponse>('GET', `/api/matches/${m.id}/state`, t1)).json;
+  assert.equal(s.view.turn, 7);
+  const { rows } = await db.query(`SELECT count(*)::int n FROM turns WHERE match_id=$1 AND status='resolved'`, [m.id]);
+  assert.equal(rows[0].n, 6);
+  for (let t = 1; t <= 6; t++) await assertReplayable(m.id, t);
+});
+
+test('административный отчёт генерации доступен только с токеном', async () => {
+  assert.equal((await call('GET', '/api/admin/worldgen?preset=test32&seed=x')).status, 403);
+  const r = await app.inject({ method: 'GET', url: '/api/admin/worldgen?preset=test32&seed=x', headers: { 'x-admin-token': 'admin-secret' } });
+  assert.equal(r.statusCode, 200);
+  assert.equal(r.json().report.ok, true);
+});
+
+async function findRoute(matchId: string, unitId: string, dest: { x: number; y: number }) {
+  const { findPath } = await import('../../src/engine/path.ts');
+  const st = await loadState(db, matchId);
+  const u = st.units.find(x => x.id === unitId)!;
+  return findPath(BALANCE, st.map, u, dest, { budget: BALANCE.units[u.type].move })!;
+}
+
+async function assertReplayable(matchId: string, turn: number) {
+  const { rows: [t] } = await db.query('SELECT snapshot, result_hash FROM turns WHERE match_id=$1 AND number=$2', [matchId, turn]);
+  const live = await loadState(db, matchId);
+  const snap = stateFromJson(t.snapshot, live.map);
+  const { rows: ords } = await db.query(`SELECT id, player_id, payload FROM orders WHERE match_id=$1 AND turn=$2 AND status='consumed' ORDER BY player_id, id`, [matchId, turn]);
+  const { botOrders } = await import('../../src/ai/simple.ts');
+  const orders = ords.map(o => ({ id: o.id, playerId: o.player_id, order: o.payload }));
+  for (const p of snap.players.filter(p => p.isBot && !p.eliminated)) {
+    botOrders(BALANCE, snap, p.id).forEach((order, i) => orders.push({ id: `bot-${turn}-${p.id}-${String(i).padStart(3, '0')}`, playerId: p.id, order }));
+  }
+  const { state } = resolveTurn(BALANCE, snap, orders);
+  assert.equal(stateHash(state), t.result_hash, `ход ${turn} не воспроизводится`);
+}

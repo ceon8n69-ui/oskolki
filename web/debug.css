@@ -1,0 +1,22 @@
+:root { --bg: #1d2329; --panel: #262e36ee; --text: #eef2f4; --muted: #9aa7b0; --accent: #f2c14e; --ok: #5fbf7a; --bad: #e0614f; }
+* { box-sizing: border-box; }
+html, body { margin: 0; height: 100%; background: var(--bg); color: var(--text); font: 14px/1.35 system-ui, sans-serif; overflow: hidden; touch-action: none; }
+button { font: inherit; color: var(--text); background: #3a4651; border: 0; border-radius: 8px; padding: 8px 12px; min-height: 40px; }
+button.primary { background: var(--accent); color: #222; font-weight: 600; }
+button:disabled { opacity: .45; }
+input { font: inherit; padding: 8px; border-radius: 8px; border: 1px solid #455; background: #111; color: var(--text); min-height: 40px; }
+.screen { padding: 16px; max-width: 520px; margin: 0 auto; overflow: auto; height: 100%; }
+.row { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin: 8px 0; }
+.card { background: #2b343c; border-radius: 10px; padding: 10px 12px; margin: 8px 0; }
+.muted { color: var(--muted); }
+canvas#map { position: fixed; inset: 0; width: 100%; height: 100%; display: block; }
+.top, .bottom { position: fixed; left: 0; right: 0; background: var(--panel); padding: 6px 8px; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; z-index: 2; }
+.top { top: 0; padding-top: max(6px, env(safe-area-inset-top)); }
+.bottom { bottom: 0; padding-bottom: max(6px, env(safe-area-inset-bottom)); }
+.sheet { position: fixed; left: 8px; right: 8px; bottom: 64px; background: var(--panel); border-radius: 12px; padding: 10px; z-index: 3; max-height: 45vh; overflow: auto; }
+.sheet h3 { margin: 0 0 6px; font-size: 15px; }
+.toast { position: fixed; top: 56px; left: 50%; transform: translateX(-50%); background: #000c; padding: 8px 14px; border-radius: 8px; z-index: 5; pointer-events: none; transition: opacity .3s; }
+.pill { padding: 2px 8px; border-radius: 99px; background: #3a4651; }
+.ready { background: var(--ok); color: #111; }
+.log { font-size: 12px; max-height: 30vh; overflow: auto; }
+.spacer { flex: 1; }

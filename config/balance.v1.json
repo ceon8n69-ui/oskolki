@@ -1,0 +1,70 @@
+{
+  "version": "balance-1.0.0",
+  "map": {
+    "chunkSize": 16,
+    "presets": {
+      "test32": { "width": 32, "height": 32, "players": 2, "neutralCities": 4, "minCapitalDistance": 14 },
+      "small64": { "width": 64, "height": 64, "players": 4, "neutralCities": 12, "minCapitalDistance": 22 },
+      "world256": { "width": 256, "height": 256, "players": 32, "neutralCities": 140, "minCapitalDistance": 26 }
+    }
+  },
+  "terrain": {
+    "deep_water":    { "moveCost": null, "defense": 1.0,  "visionBonus": 0, "hidesUnits": false },
+    "shallow_water": { "moveCost": null, "defense": 1.0,  "visionBonus": 0, "hidesUnits": false },
+    "plains":        { "moveCost": 1,    "defense": 1.0,  "visionBonus": 0, "hidesUnits": false },
+    "forest":        { "moveCost": 2,    "defense": 1.25, "visionBonus": 0, "hidesUnits": true },
+    "hills":         { "moveCost": 2,    "defense": 1.5,  "visionBonus": 1, "hidesUnits": false },
+    "mountain":      { "moveCost": null, "defense": 2.0,  "visionBonus": 2, "hidesUnits": false }
+  },
+  "roadMoveCost": 0.5,
+  "bridgeMoveCost": 1,
+  "combat": {
+    "damageScale": 4.5,
+    "fortifyDefense": 1.25,
+    "cityDefense": 1.5,
+    "maxCountersPerTurn": 1,
+    "minDamage": 1
+  },
+  "units": {
+    "scout":    { "name": "Разведчик",  "hp": 8,  "attack": 1, "defense": 1, "move": 4, "range": 1, "vision": 3, "initiative": 4, "cost": { "gold": 6,  "production": 4 }, "upkeep": 1, "requires": null,       "xpOnKill": 2 },
+    "infantry": { "name": "Пехотинец",  "hp": 10, "attack": 2, "defense": 2, "move": 2, "range": 1, "vision": 2, "initiative": 2, "cost": { "gold": 8,  "production": 6 }, "upkeep": 1, "requires": null,       "xpOnKill": 2 },
+    "spearman": { "name": "Копейщик",   "hp": 10, "attack": 2, "defense": 3, "move": 2, "range": 1, "vision": 2, "initiative": 3, "cost": { "gold": 10, "production": 7 }, "upkeep": 2, "requires": "spearcraft", "xpOnKill": 2, "bonusVs": { "scout": 1.5 } },
+    "archer":   { "name": "Лучник",     "hp": 10, "attack": 2, "defense": 1, "move": 2, "range": 2, "vision": 2, "initiative": 1, "cost": { "gold": 10, "production": 7 }, "upkeep": 2, "requires": "archery",  "xpOnKill": 2 }
+  },
+  "ranks": {
+    "thresholds": [0, 4, 10],
+    "hpBonus": [0, 2, 4],
+    "attackMultiplier": [1.0, 1.1, 1.2]
+  },
+  "xp": { "perCombat": 1, "perCapture": 2 },
+  "cities": {
+    "goldPerLevel": [0, 4, 6, 8, 10],
+    "productionPerLevel": [0, 3, 4, 5, 6],
+    "knowledgePerLevel": [0, 2, 3, 4, 5],
+    "capitalBonusGold": 2,
+    "occupiedIncomeMultiplier": 0,
+    "visionRadius": 2,
+    "neutralGarrison": "infantry"
+  },
+  "economy": {
+    "startGold": 20,
+    "deficitRecruitBlocked": true
+  },
+  "capture": {
+    "holdTurns": 1
+  },
+  "techs": {
+    "spearcraft": { "name": "Древковое оружие", "cost": 6,  "requires": [], "unlocksUnits": ["spearman"], "modifiers": {} },
+    "archery":    { "name": "Стрелковое дело",  "cost": 8,  "requires": [], "unlocksUnits": ["archer"],   "modifiers": {} },
+    "smithing":   { "name": "Кузнечное дело",   "cost": 12, "requires": ["spearcraft"], "unlocksUnits": [], "modifiers": { "attackBonus": 0.5 } },
+    "masonry":    { "name": "Каменная кладка",  "cost": 10, "requires": [], "unlocksUnits": [], "modifiers": { "cityDefenseBonus": 0.25 } }
+  },
+  "factions": {
+    "union": { "name": "Союз городов", "color": "#3568aa", "startUnits": ["infantry", "scout"] }
+  },
+  "turnPresets": {
+    "quick":  { "planningSeconds": 90,    "mapPreset": "test32" },
+    "async":  { "planningSeconds": 21600, "mapPreset": "small64" },
+    "vsbot":  { "planningSeconds": 0,     "mapPreset": "test32" }
+  }
+}

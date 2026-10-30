@@ -1,13 +1,37 @@
 {
   "name": "oskolki",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "private": true,
   "type": "module",
+  "description": "Осколки королевств — Telegram Mini App, серверная стратегия с одновременными ходами",
   "scripts": {
-    "start": "node server.mjs",
-    "check": "node --check server.mjs && node --check public/game.js"
+    "start": "node src/server/main.ts",
+    "dev": "node --watch src/server/main.ts",
+    "build:web": "node scripts/build-web.ts",
+    "build": "npm run build:web",
+    "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test --test-concurrency=1 \"test/**/*.test.ts\"",
+    "test:unit": "node --test \"test/engine/*.test.ts\" \"test/worldgen/*.test.ts\"",
+    "migrate": "node src/server/db/migrate.ts",
+    "worldgen": "node scripts/worldgen-cli.ts",
+    "bench": "node scripts/bench-turn.ts",
+    "check:boundaries": "node scripts/check-boundaries.ts",
+    "check": "npm run typecheck && npm run check:boundaries && npm run test"
   },
   "engines": {
-    "node": ">=22"
+    "node": ">=22.18"
+  },
+  "dependencies": {
+    "@fastify/static": "^8.0.0",
+    "@fastify/websocket": "^11.0.0",
+    "fastify": "^5.0.0",
+    "pg": "^8.13.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "@types/pg": "^8.11.0",
+    "@types/ws": "^8.5.0",
+    "esbuild": "^0.25.0",
+    "typescript": "^5.9.0"
   }
 }
