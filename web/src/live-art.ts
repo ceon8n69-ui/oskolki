@@ -29,3 +29,21 @@ export function drawLiveArt(ctx: CanvasRenderingContext2D, kind: string, x: numb
   ctx.drawImage(source, sx, sy, sw, sh, x - w / 2, y - h / 2, w, h);
   ctx.restore(); return true;
 }
+
+/** Высота спрайта в долях ширины ромба клетки (2.5D): нижний край ставится на точку земли. */
+const ISO_HEIGHT: Record<string, number> = { castle: 1.35, tree: 0.8, mountain: 1.05, bridge: 0.6, shieldbearer: 0.95, archer: 0.95, infantry: 0.95, commander: 1.05, scout: 0.92 };
+export function hasLiveArt(kind: string): boolean {
+  const isStarter = Object.hasOwn(starters, kind);
+  return !!(isStarter ? starterImage : image) && (isStarter || Object.hasOwn(rects, kind));
+}
+/** 2.5D: спрайт стоит на земле в точке (x, groundY); size — ширина ромба клетки. */
+export function drawLiveArtIso(ctx: CanvasRenderingContext2D, kind: string, x: number, groundY: number, size: number, opacity = 1, scale = 1): boolean {
+  const isStarter = Object.hasOwn(starters, kind);
+  const source = isStarter ? starterImage : image;
+  if (!source || size < 14 || (!isStarter && !Object.hasOwn(rects, kind))) return false;
+  const [sx, sy, sw, sh] = isStarter ? starters[kind as keyof typeof starters] : rects[kind as Sprite];
+  const h = size * (ISO_HEIGHT[kind] ?? 0.9) * scale, w = h * sw / sh;
+  ctx.save(); ctx.globalAlpha *= opacity;
+  ctx.drawImage(source, sx, sy, sw, sh, x - w / 2, groundY - h * 0.97, w, h);
+  ctx.restore(); return true;
+}

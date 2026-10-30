@@ -22,7 +22,7 @@ client.on('state', s => ...);                   // любое изменение
 client.on('turnResolved', ({ events, before, after }) => ...); // новый ход
 ```
 
-Пример полного использования — отладочный клиент `web/src/main.ts` (вид сверху). Его функции `frame`, `drawUnit`, `tileToScreen`, `screenToTile`, `displayUnits` — то, что заменяется изометрической сценой.
+Пример полного использования — клиент `web/src/main.ts` (2.5D-изометрия на Canvas 2D). Его функции `frame`, `drawTile`, `drawTileProps`, `drawCity`, `drawUnit`, `project`, `screenToTile`, `pickTile`, `displayUnits` — то, что заменяется финальной сценой (Three.js) при необходимости.
 
 ## Данные
 
