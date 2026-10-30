@@ -23,9 +23,13 @@ const REASONS: Record<string, string> = {
   commander_absent: 'Командир пал', tech_unavailable: 'Технология недоступна вашему народу или исключена выбором', tech_excluded: 'Взаимоисключающие технологии',
   forest_needs_plains: 'Лес сажают на равнине', treaty_forbids_attack: 'Договор запрещает атаку', territory_closed: 'Перемирие: чужая территория закрыта',
   alliances_disabled: 'В этом режиме союзы запрещены', proposal_not_delivered: 'Предложение ещё не дошло (будет видно со следующего хода)', break_pending: 'Уже объявлен разрыв', fort_exists: 'Укрепление уже есть', route_through_unexplored: 'Маршрут — только по разведанным клеткам',
+  needs_port: 'Нужен порт в этом городе', not_coastal: 'Только в прибрежном городе', transport_full: 'Транспорт заполнен', embark_move_only: 'Погрузка — только движением',
+  disembark_one_step: 'Высадка — один шаг на соседнюю сушу', bad_landing: 'Сюда не высадиться', landing_occupied: 'Клетка высадки занята',
+  nothing_to_scorch: 'Здесь нечего жечь', scorch_in_city: 'Нельзя жечь город', obelisk_in_city: 'Обелиск нельзя ставить в городе',
+  structure_exists: 'Здесь уже есть сооружение', obelisk_too_close: 'Слишком близко к другому обелиску',
 };
 const TERRAIN_COLORS: Record<number, string> = { 0: '#1f4e79', 1: '#2f6f9f', 2: '#8fb36b', 3: '#3f7a46', 4: '#a99a63', 5: '#7d7f86', 255: '#0d1013' };
-const UNIT_LETTER: Record<string, string> = { scout: 'Р', infantry: 'П', spearman: 'К', archer: 'Л', shieldbearer: 'Щ', cavalry: 'В', siege: 'О', engineer: 'И', legionary: 'Лг', standard: 'Зн', ranger: 'Сл', warden: 'Ст', ironclad: 'Лт', bombard: 'Б', corsair: 'Кр', tidecaller: 'З', commander: '★' };
+const UNIT_LETTER: Record<string, string> = { scout: 'Р', infantry: 'П', spearman: 'К', archer: 'Л', shieldbearer: 'Щ', cavalry: 'В', siege: 'О', engineer: 'И', legionary: 'Лг', standard: 'Зн', ranger: 'Сл', warden: 'Ст', ironclad: 'Лт', bombard: 'Б', corsair: 'Кр', tidecaller: 'З', raider: 'Н', firebrand: 'М', runesmith: 'Ру', sentinel: 'Пс', transport: '⛵', warship: '⚓', commander: '★' };
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
 function toast(text: string) {
@@ -95,7 +99,7 @@ async function lobby() {
     <div class="row">Победа: <select id="vic">${Object.entries(BALANCE.victoryModes).map(([id, v]) => `<option value="${id}">${esc(v.name)}</option>`).join('')}<option value="" selected>по пресету</option></select>
       Лимит ходов: <input id="tl" type="number" min="5" max="1000" placeholder="по пресету" style="width:110px"></div>
     <div class="row">Народ: <select id="fac">${Object.entries(BALANCE.factions).map(([id, f]) => `<option value="${id}">${esc(f.name)}</option>`).join('')}</select></div>
-    <div class="row"><button class="primary" data-p="quick">Быстрая партия (90 с)</button><button data-p="vsbot">Против бота</button><button data-p="async">Асинхронная (6 ч)</button><button data-p="campaign">Кампания 256×256</button></div>
+    <div class="row"><button class="primary" data-p="quick">Быстрая партия (90 с)</button><button data-p="vsbot">Против бота</button><button data-p="async">Асинхронная (6 ч)</button><button data-p="campaign">Кампания 256×256</button><button data-p="conquest">Завоевание 128×128</button><button data-p="islands">Архипелаг (флот)</button></div>
     <div class="row"><input id="code" placeholder="Код приглашения"><button id="join">Вступить</button></div>
     <h3>Мои партии</h3>
     ${matches.map(m => `<div class="card" data-m="${m.id}"><b>${esc(m.preset)}</b> · ${m.phase === 'lobby' ? `ожидание ${m.players.length}/${m.maxPlayers}` : m.phase === 'finished' ? 'завершена' : `ход ${m.turn}`}<br><span class="muted">${m.players.map(p => esc(p.name)).join(', ')}</span></div>`).join('') || '<p class="muted">Пока нет партий</p>'}
@@ -175,7 +179,7 @@ async function openMatch(id: string) {
 
 let cam = { x: 16, y: 16, size: 28 };
 let selected: string | null = null;
-let moveTiles: { x: number; y: number; cost: number }[] = [];
+let moveTiles: { x: number; y: number; cost: number; embark?: boolean; disembark?: boolean }[] = [];
 let sheet: 'none' | 'city' | 'research' | 'log' | 'commander' | 'diplomacy' = 'none';
 let markerMode = false;
 let markers: { id: number; playerId: string; x: number; y: number; label: string; shared: boolean }[] = [];
@@ -307,6 +311,7 @@ function renderHud() {
     <span class="pill ${me?.ready ? 'ready' : ''}">Готовы ${readyCount}/${st.match.players.length}</span>
     ${st.view.mode.victory === 'influence' ? `<span class="pill">◈ ${st.view.mode.scores[st.view.me.id] ?? 0}</span>` : ''}
     ${st.view.mode.turnLimit ? `<span class="pill">до ${st.view.mode.turnLimit}</span>` : ''}
+    ${st.view.worldEvents.map(e => `<span class="pill" title="${esc(e.description)}">☼ ${esc(e.name)} до ${e.endTurn}</span>`).join('')}
     ${st.match.phase === 'finished' ? `<span class="pill">${(st.match.winners ?? [st.match.winner]).includes(st.view.me.id) ? 'Победа!' : 'Партия завершена'}</span>` : ''}
     ${player && !player.done ? `<span class="spacer"></span><button id="sp">×${player.speed === 1 ? 2 : 1}</button><button id="sk">Пропустить</button>` : ''}`;
   const rb = document.getElementById('bReady') as HTMLButtonElement;
@@ -345,6 +350,9 @@ function renderSheet() {
       ${u.pendingPerks && !perkOrder ? `<div class="row">Новый ранг — выберите улучшение: ${Object.entries(BALANCE.perks).filter(([id]) => !u.perks?.includes(id)).map(([id, p]) => `<button data-perk="${id}" title="${esc(p.description)}">${esc(p.name)}</button>`).join('')}</div>` : ''}
       <div class="row"><button id="uHold">Укрепиться</button>
         <button data-build="road">Дорога</button><button data-build="fort">Форт</button><button data-build="forest">Посадить лес</button>
+        ${BALANCE.factions[me.faction]?.traits.scorch ? '<button data-build="scorch">Выжечь</button>' : ''}
+        ${BALANCE.factions[me.faction]?.traits.buildObelisk || rule.abilities.includes('build_obelisk') ? `<button data-build="obelisk">Обелиск ${BALANCE.obelisks.goldCost}◉</button>` : ''}
+        ${u.carriedBy ? '<span class="muted">На борту: подсвечены клетки высадки</span>' : ''}${u.cargo ? `<span class="muted">На борту: ${u.cargo}</span>` : ''}
         ${rule.abilities.includes('knockback') ? `<button id="uBash" class="${bashMode ? 'primary' : ''}">Удар щитом: ${bashMode ? 'вкл' : 'выкл'}</button>` : ''}
         ${ord ? '<button id="uCancel">Отменить приказ</button>' : ''}</div>
       <div class="muted">Подсвеченная клетка — движение в этот ход; дальняя исследованная клетка — маршрут; противник — атака.</div>` : ''}</div>`;
@@ -644,6 +652,18 @@ function frame(now: number) {
     }
     ctx.stroke();
   }
+  // обелиски
+  for (const o of st.view.structures) {
+    const { sx, sy } = tileToScreen(o.x, o.y);
+    ctx.fillStyle = st.view.players.find(p => p.id === o.owner)?.color ?? '#ccc';
+    ctx.fillRect(sx - S * 0.08, sy - S * 0.45, S * 0.16, S * 0.4);
+    if (o.owner === st.view.me.id) {
+      ctx.strokeStyle = o.linked ? '#b48cff' : '#555';
+      ctx.beginPath();
+      ctx.arc(sx, sy, S * (BALANCE.obelisks.fieldRadius + 0.5), 0, Math.PI * 2);
+      ctx.stroke();
+    }
+  }
   // цели влияния и метки
   for (const o of st.view.mode.objectives) {
     const { sx, sy } = tileToScreen(o.x, o.y);
@@ -671,8 +691,14 @@ function frame(now: number) {
   }
   const { units, floats } = displayUnits(now);
   for (const u of units) {
+    if (u.carriedBy) continue; // груз рисуется числом на транспорте
     const { sx, sy } = tileToScreen(u.x + (u.dx ?? 0), u.y + (u.dy ?? 0));
     drawUnit(sx, sy, u.type, st.view.players.find(p => p.id === u.owner)?.color ?? '#999', u.hp, u.id === selected, u.statuses.some(s => s.id === 'fortified'));
+    if (u.cargo) {
+      ctx.fillStyle = '#fff';
+      ctx.font = 'bold 10px system-ui';
+      ctx.fillText(`+${u.cargo}`, sx - S * 0.34, sy + S * 0.45);
+    }
   }
   for (const f of floats) {
     const { sx, sy } = tileToScreen(f.x, f.y);
@@ -783,8 +809,24 @@ async function tap(t: Coord) {
     pulseMode = false;
     return submit(client.commanderAbility('scout_pulse', t));
   }
-  const here = st.view.units.find(u => u.x === t.x && u.y === t.y);
+  const here = st.view.units.find(u => u.x === t.x && u.y === t.y && !u.carriedBy);
   const sel = selected ? st.view.units.find(u => u.id === selected && u.owner === st.view.me.id) : null;
+  // Флот: высадка и погрузка по подсвеченным клеткам.
+  const opt = sel && moveTiles.find(m => m.x === t.x && m.y === t.y);
+  if (sel && opt?.disembark) return submit(client.disembark(sel.id, t));
+  if (sel && opt?.embark) {
+    const map = localMap();
+    const blocked = new Set(st.view.units.filter(u => u.owner !== st.view.me.id).map(u => u.y * map.width + u.x));
+    const near = moveTiles.filter(m => !m.embark && dist(m, t) === 1).sort((a, b) => a.cost - b.cost)[0];
+    const pre = dist(sel, t) === 1 ? [] : near && findPath(BALANCE, map, sel, near, { budget: BALANCE.units[sel.type].move, blocked });
+    if (!pre) return toast('Транспорт недостижим в этот ход');
+    return submit(client.embark(sel.id, [...pre, t]));
+  }
+  // Свой транспорт с грузом: повторное касание выбирает груз.
+  if (here && here.owner === st.view.me.id && here.id === selected && here.cargo) {
+    const cargo = st.view.units.find(u => u.carriedBy === here.id);
+    if (cargo) return select(cargo.id);
+  }
   if (here && here.owner === st.view.me.id) return select(here.id);
   if (sel && here && here.owner !== st.view.me.id) {
     // Атака: с места, либо подойти в пределах бюджета движения.
@@ -885,6 +927,15 @@ function logEvents(events: StoredEvent[], turn?: number) {
       e.t === 'route_paused' ? `Маршрут остановлен (${e.reason === 'threat' ? 'угроза рядом' : e.reason === 'blocked' ? 'путь перекрыт' : 'путь недоступен'})` :
       e.t === 'route_completed' ? 'Маршрут завершён' :
       e.t === 'build_failed' ? `Строительство сорвано (${e.reason})` :
+      e.t === 'embarked' ? 'Отряд погрузился на транспорт' :
+      e.t === 'disembarked' ? `Высадка (${e.to.x},${e.to.y})` :
+      e.t === 'scorched' ? `Выжжена земля (${e.at.x},${e.at.y})${e.foodLost ? `, город потерял ${e.foodLost} еды` : ''}` :
+      e.t === 'obelisk_built' ? `Поставлен обелиск (${e.at.x},${e.at.y})` :
+      e.t === 'structure_destroyed' ? `Разрушен обелиск ${name(e.owner)} (${e.at.x},${e.at.y})` :
+      e.t === 'ruins_looted' ? `Руины: +${e.amount} ${({ gold: 'золота', knowledge: 'знаний', xp: 'опыта', wood: 'древесины', crystal: 'кристаллов' } as Record<string, string>)[e.reward] ?? e.reward}` :
+      e.t === 'world_event' ? `${e.phase === 'start' ? 'Событие' : 'Закончилось'}: ${BALANCE.worldEvents.list[e.eventId]?.name ?? e.eventId}${e.phase === 'start' ? ` (до хода ${e.endTurn})` : ''}` :
+      e.t === 'momentum' ? 'Натиск: +1 к движению на следующий ход' :
+      e.t === 'plunder' ? `Добыча: +${e.gold} золота` :
       e.t === 'income' ? `Доход +${e.gold}, содержание −${e.upkeep}${e.deficit ? ' — ДЕФИЦИТ' : ''}` : null;
     if (line) logLines.push(`[${turn ?? '?'}] ${line}`);
   }

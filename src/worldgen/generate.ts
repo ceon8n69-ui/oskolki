@@ -7,7 +7,7 @@ import { dijkstra } from '../engine/path.ts';
 import { createRng, hash32 } from '../engine/rng.ts';
 import { fbm } from './noise.ts';
 
-export const GENERATOR_VERSION = 'worldgen-1.1.0';
+export const GENERATOR_VERSION = 'worldgen-1.2.0';
 
 export interface WorldSpec extends MapPreset {
   seed: string;
@@ -79,11 +79,22 @@ function generateAttempt(b: Balance, spec: WorldSpec, attempt: number): Generate
       moist[idx(map, x, y)] = fbm(s + 31, x, y, 4, contScale / 1.6);
     }
   }
+  const islands = spec.shape === 'islands';
+  const centers = islands ? islandCenters(spec, rng) : [];
+  if (islands) {
+    // Архипелаг: остров на игрока по кругу, центральный и малые нейтральные острова; береговая линия — из шума.
+    for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
+      let e = -1;
+      for (const c of centers) e = Math.max(e, 1 - Math.hypot(x - c.x, y - c.y) / c.r);
+      elev[idx(map, x, y)] = e + (fbm(s + 13, x, y, 4, 6) - 0.5) * 0.45;
+    }
+  }
   const sorted = Float64Array.from(elev).sort();
   const landRatio = spec.landRatio ?? (W <= 48 ? 0.8 : 0.58);
-  const sea = sorted[Math.floor(n * (1 - landRatio))];
-  const hillsCut = sorted[Math.floor(n * 0.9)];
-  const mountCut = sorted[Math.floor(n * 0.965)];
+  const sea = islands ? 0 : sorted[Math.floor(n * (1 - landRatio))];
+  const landSorted = islands ? sorted.filter(e => e >= sea) : sorted;
+  const hillsCut = islands ? landSorted[Math.floor(landSorted.length * 0.8)] : sorted[Math.floor(n * 0.9)];
+  const mountCut = islands ? landSorted[Math.floor(landSorted.length * 0.96)] : sorted[Math.floor(n * 0.965)];
   for (let i = 0; i < n; i++) {
     const e = elev[i];
     if (e < sea) terrain[i] = Terrain.DeepWater;
@@ -130,13 +141,15 @@ function generateAttempt(b: Balance, spec: WorldSpec, attempt: number): Generate
     compSizes.push(size);
   }
   const main = compSizes.indexOf(Math.max(...compSizes, 0));
+  // На архипелаге «основная суша» — любой крупный остров.
+  const bigLand = (i: number) => (islands ? comp[i] >= 0 && compSizes[comp[i]] >= 25 : comp[i] === main);
 
   // --- столицы: равнины основной суши, жадный выбор самых удалённых точек ---
   const margin = 2;
   const candidates: Coord[] = [];
   for (let y = margin; y < H - margin; y++) for (let x = margin; x < W - margin; x++) {
     const i = idx(map, x, y);
-    if (comp[i] !== main || terrain[i] !== Terrain.Plains) continue;
+    if (!bigLand(i) || terrain[i] !== Terrain.Plains) continue;
     let landAround = 0;
     for (const [dx, dy] of DIRS8) if (isLandPassable(b, map, x + dx, y + dy)) landAround++;
     if (landAround >= 7) candidates.push({ x, y });
@@ -146,7 +159,7 @@ function generateAttempt(b: Balance, spec: WorldSpec, attempt: number): Generate
   const openness = (c: Coord) => {
     let sc = 0;
     for (let y = c.y - 5; y <= c.y + 5; y++) for (let x = c.x - 5; x <= c.x + 5; x++) {
-      if (x < 0 || y < 0 || x >= W || y >= H || comp[idx(map, x, y)] !== main) continue;
+      if (x < 0 || y < 0 || x >= W || y >= H || !bigLand(idx(map, x, y))) continue;
       const t = terrain[idx(map, x, y)];
       sc += t === Terrain.Plains ? 1 : t === Terrain.Forest || t === Terrain.Hills ? 0.5 : 0;
     }
@@ -160,7 +173,14 @@ function generateAttempt(b: Balance, spec: WorldSpec, attempt: number): Generate
     candidates.push(...keep);
   }
   const capitals: Coord[] = [];
-  if (candidates.length) {
+  if (islands) {
+    // Столица — ближайшая к центру острова игрока подходящая клетка.
+    for (const c of centers.filter(c => c.player)) {
+      let best: Coord | null = null;
+      for (const k of candidates) if (!best || Math.hypot(k.x - c.x, k.y - c.y) < Math.hypot(best.x - c.x, best.y - c.y)) best = k;
+      if (best && Math.hypot(best.x - c.x, best.y - c.y) <= c.r && !capitals.includes(best)) capitals.push(best);
+    }
+  } else if (candidates.length) {
     capitals.push(candidates[Math.floor(rng() * candidates.length)]);
     while (capitals.length < spec.players) {
       let best: Coord | null = null;
@@ -188,7 +208,7 @@ function generateAttempt(b: Balance, spec: WorldSpec, attempt: number): Generate
   const cities: Coord[] = [...capitals];
   const neutralCities: Coord[] = [];
   const canPlaceCity = (c: Coord, minGap: number) =>
-    comp[idx(map, c.x, c.y)] === main &&
+    bigLand(idx(map, c.x, c.y)) &&
     terrain[idx(map, c.x, c.y)] !== Terrain.Mountain &&
     cities.every(k => Math.max(Math.abs(k.x - c.x), Math.abs(k.y - c.y)) >= minGap);
 
@@ -256,6 +276,23 @@ function generateAttempt(b: Balance, spec: WorldSpec, attempt: number): Generate
   return { map, capitals, neutralCities, report };
 }
 
+/** Центры островов архипелага: игроки по кругу, между ними малые острова, в центре — нейтральный. */
+function islandCenters(spec: WorldSpec, rng: () => number): { x: number; y: number; r: number; player: boolean }[] {
+  const { width: W, height: H, players } = spec;
+  const m = Math.min(W, H);
+  const R = m * 0.31;
+  const a0 = rng() * Math.PI * 2;
+  const out: { x: number; y: number; r: number; player: boolean }[] = [];
+  for (let k = 0; k < players; k++) {
+    const a = a0 + (k / players) * Math.PI * 2;
+    out.push({ x: W / 2 + Math.cos(a) * R, y: H / 2 + Math.sin(a) * R, r: m * 0.15, player: true });
+    const am = a + Math.PI / players;
+    out.push({ x: W / 2 + Math.cos(am) * R * 1.12, y: H / 2 + Math.sin(am) * R * 1.12, r: m * 0.075, player: false });
+  }
+  out.push({ x: W / 2, y: H / 2, r: m * 0.13, player: false });
+  return out;
+}
+
 export function startAccess(b: Balance, map: MapData, c: Coord): number {
   const limit = 3 * b.units.infantry.move;
   const { cost } = dijkstra(b, map, c, { budget: limit });
@@ -312,8 +349,11 @@ export function validateWorld(
   const add = (id: string, ok: boolean, detail: string) => checks.push({ id, ok, detail });
 
   add('capital_count', capitals.length === spec.players, `${capitals.length}/${spec.players}`);
+  const islands = spec.shape === 'islands';
   const costs = capitals.map(c => dijkstra(b, map, c).cost);
-  const capDist = capitals.map((_, a) => capitals.map((c, k) => (a === k ? 0 : Math.round(costs[a][idx(map, c.x, c.y)]))));
+  // Досягаемость: по суше, а на архипелаге — с переправой по воде (флот).
+  const reach = islands ? capitals.map(c => dijkstra(b, map, c, { profile: { shallow: 1, deep: 1 } }).cost) : costs;
+  const capDist = capitals.map((_, a) => capitals.map((c, k) => (a === k ? 0 : Math.round(reach[a][idx(map, c.x, c.y)]))));
 
   // Стартовые позиции доступны и не заперты.
   capitals.forEach((c, i) => {
@@ -332,7 +372,7 @@ export function validateWorld(
   add('capitals_mutually_reachable', allReach, allReach ? 'да' : 'есть недостижимые столицы');
   add('capital_min_distance', capitals.length < 2 || minD >= spec.minCapitalDistance, `минимум ${minD} ОД, требуется ${spec.minCapitalDistance}`);
   // Нейтральные поселения достижимы.
-  const unreachable = neutralCities.filter(c => !costs.some(cs => Number.isFinite(cs[idx(map, c.x, c.y)])));
+  const unreachable = neutralCities.filter(c => !reach.some(cs => Number.isFinite(cs[idx(map, c.x, c.y)])));
   add('neutral_cities_reachable', unreachable.length === 0, `${neutralCities.length - unreachable.length}/${neutralCities.length}`);
   // Поселение в пределах заданного числа ходов пехоты.
   const [nMin, nMax] = spec.neutralWithinTurns ?? [2, 6];
@@ -363,10 +403,14 @@ export function validateWorld(
   // Замкнутые области: доля суши вне основного материка (острова допустимы — для флота).
   const land = ctx.compSizes.reduce((a, x) => a + x, 0);
   const mainSize = ctx.compSizes[ctx.main] ?? 0;
-  add('main_landmass', land === 0 ? false : mainSize / land >= 0.5, `основная суша ${mainSize}/${land}`);
-  // Столицы на одной суше (до появления флота).
-  const sameLand = capitals.every(c => ctx.comp[idx(map, c.x, c.y)] === ctx.main);
-  add('capitals_on_main_landmass', sameLand, sameLand ? 'да' : 'нет');
+  if (islands) {
+    const own = new Set(capitals.map(c => ctx.comp[idx(map, c.x, c.y)]));
+    add('capitals_on_separate_islands', own.size === capitals.length, `${own.size} островов на ${capitals.length} столиц`);
+  } else {
+    add('main_landmass', land === 0 ? false : mainSize / land >= 0.5, `основная суша ${mainSize}/${land}`);
+    const sameLand = capitals.every(c => ctx.comp[idx(map, c.x, c.y)] === ctx.main);
+    add('capitals_on_main_landmass', sameLand, sameLand ? 'да' : 'нет');
+  }
 
   let water = 0, forest = 0, hills = 0, mountain = 0;
   for (let i = 0; i < n; i++) {

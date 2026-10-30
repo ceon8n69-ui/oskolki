@@ -15,7 +15,8 @@ export type Cost = { gold?: number; production?: number } & Partial<Materials>;
 
 export type UnitAbility =
   | 'zoc' | 'ignore_zoc' | 'cover' | 'knockback' | 'suppress' | 'build' | 'build_fort' | 'fast_build'
-  | 'no_attack_after_move' | 'siege' | 'inspire' | 'forest_stride' | 'plant_forest' | 'heavy' | 'amphibious' | 'commander';
+  | 'no_attack_after_move' | 'siege' | 'inspire' | 'forest_stride' | 'plant_forest' | 'heavy' | 'amphibious' | 'commander'
+  | 'naval' | 'transport' | 'incendiary' | 'build_obelisk';
 
 export interface UnitRule {
   name: string;
@@ -59,6 +60,15 @@ export interface TechModifiers {
   fortBonus?: number;
   deepWater?: boolean;
   coastalGold?: number;
+  foodPerCity?: number;
+  lootBonus?: number;
+  plunderBonus?: number;
+  frontLimitBonus?: number;
+  scorchGold?: number;
+  resonanceBonus?: number;
+  obeliskLink?: number;
+  ruinsKnowledge?: number;
+  obeliskField?: number;
 }
 
 export interface TechRule {
@@ -82,6 +92,8 @@ export interface BuildingRule {
     woodPerTile?: number; ironPerTile?: number; crystalPerTile?: number;
     unitProduction?: number; recruitXp?: number; cityDefense?: number; supplyRadius?: number;
   };
+  /** Только в прибрежном городе (вода на соседней клетке). */
+  coastal?: boolean;
 }
 
 export interface SpecializationRule {
@@ -101,9 +113,22 @@ export interface FactionTraits {
   buildFort?: boolean;
   hpBonus?: number;
   shallowWater?: boolean;
+  shallowCost?: number;
   coastAttackMul?: number;
   inlandDistance?: number;
   inlandAttackMul?: number;
+  // Пепельные орды
+  momentumMove?: number;
+  scorch?: boolean;
+  plunderGold?: number;
+  frontLimit?: number;
+  frontPenaltyGold?: number;
+  supplyRadiusMod?: number;
+  // Хранители руин
+  buildObelisk?: boolean;
+  resonanceMul?: number;
+  severedMul?: number;
+  lootMul?: number;
 }
 
 export interface FactionRule {
@@ -141,6 +166,17 @@ export interface MapPreset {
   players: number;
   neutralCities: number;
   minCapitalDistance: number;
+  /** Форма суши: материки (по умолчанию) или архипелаг — по острову на игрока. */
+  shape?: 'continent' | 'islands';
+}
+
+export type LootKind = 'gold' | 'knowledge' | 'xp' | 'wood' | 'crystal';
+
+export interface WorldEventRule {
+  name: string;
+  weight: number;
+  description: string;
+  effects: { food?: number; gold?: number; navalMove?: number; vision?: number; fieldHealing?: number; restoreRuins?: number };
 }
 
 export interface Balance {
@@ -189,6 +225,11 @@ export interface Balance {
   roads: { goldCost: number; builders: string[]; territoryRadius: number };
   forts: { goldCost: number; woodCost: number; defenseMul: number };
   plantForest: { goldCost: number };
+  naval: { transportCapacity: number; embarkCost: number };
+  scorch: { radius: number; foodLoss: number; gold: number };
+  obelisks: { goldCost: number; linkRange: number; fieldRadius: number; visionRadius: number; supplyRadius: number; minSpacing: number; ruinsKnowledge: number };
+  ruinsLoot: { rewards: { kind: LootKind; amount: number }[] };
+  worldEvents: { firstTurn: number; interval: number; duration: number; chance: number; list: Record<string, WorldEventRule> };
   techs: Record<string, TechRule>;
   factions: Record<string, FactionRule>;
   effects: Record<string, EffectRule>;
@@ -239,6 +280,9 @@ function validate(b: Balance): Balance {
   }
   if (!b.units[b.cities.neutralGarrison]) throw new Error('balance: неизвестный гарнизон нейтральных городов');
   if (!b.units.commander) throw new Error('balance: нет юнита командира');
+  for (const [id, p] of Object.entries(b.turnPresets)) if (!b.map.presets[p.mapPreset]) throw new Error(`balance: пресет ${id}: неизвестная карта ${p.mapPreset}`);
+  if (!b.ruinsLoot.rewards.length) throw new Error('balance: пустой список наград руин');
+  for (const [id, e] of Object.entries(b.worldEvents.list)) if (!(e.weight > 0)) throw new Error(`balance: событие ${id}: вес должен быть > 0`);
   return b;
 }
 

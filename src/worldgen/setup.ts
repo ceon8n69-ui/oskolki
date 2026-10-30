@@ -1,7 +1,7 @@
 // Создание начального состояния партии из сгенерированного мира.
 import type { Balance } from '../shared/balance.ts';
 import type { GameState, MatchMode, PlayerState } from '../shared/types.ts';
-import { Feature } from '../shared/types.ts';
+import { Feature, emptyWorld } from '../shared/types.ts';
 import { defaultMode, pickObjectives } from '../engine/diplomacy.ts';
 import { createRng, hash32 } from '../engine/rng.ts';
 import { NEUTRAL } from '../shared/types.ts';
@@ -57,6 +57,7 @@ export function createInitialState(
     nextIds: { unit: 1 },
     diplomacy: [],
     mode: { ...defaultMode(), ...(opts.mode ?? {}) },
+    world: emptyWorld(),
   };
   const { cities, units } = state;
   const spawn = (owner: string, type: string, x: number, y: number) => {

@@ -78,6 +78,8 @@ export interface UnitState {
   perks: string[]; // улучшения, выбранные при повышении ранга
   pendingPerks: number; // сколько улучшений ждут выбора
   supplyOut: number; // ходов подряд вне зоны снабжения
+  /** На борту своего транспорта (id транспорта). Координаты совпадают с транспортом. */
+  carriedBy?: UnitId;
 }
 
 export interface StatusEffect {
@@ -156,6 +158,35 @@ export interface GameState {
   nextIds: { unit: number };
   diplomacy: Treaty[]; // пары, отличные от состояния по умолчанию, или с предложениями
   mode: MatchMode;
+  world: WorldState;
+}
+
+/** Сооружение на клетке с владельцем (обелиски Хранителей руин). */
+export interface Structure {
+  id: string;
+  kind: 'obelisk';
+  owner: PlayerId;
+  x: number;
+  y: number;
+  builtTurn: number;
+}
+
+export interface ActiveWorldEvent {
+  id: string;
+  startTurn: number;
+  endTurn: number; // последний ход действия включительно
+}
+
+/** Изменяемое состояние мира, не относящееся к отдельному игроку. */
+export interface WorldState {
+  structures: Structure[];
+  lootedRuins: number[]; // индексы клеток с уже разграбленными руинами
+  events: ActiveWorldEvent[];
+  nextStructureId: number;
+}
+
+export function emptyWorld(): WorldState {
+  return { structures: [], lootedRuins: [], events: [], nextStructureId: 1 };
 }
 
 export type TreatyStatus = 'war' | 'truce' | 'alliance';
@@ -235,7 +266,7 @@ export interface UnitOrder {
   ability?: 'knockback';
 }
 
-export type BuildKind = 'road' | 'fort' | 'forest';
+export type BuildKind = 'road' | 'fort' | 'forest' | 'scorch' | 'obelisk';
 
 /** Постройка в городе. */
 export interface ConstructOrder {
@@ -365,7 +396,16 @@ export type TurnEvent =
   | { t: 'diplomacy_changed'; a: PlayerId; b: PlayerId; status: TreatyStatus; previous: TreatyStatus }
   | { t: 'objective_held'; objectiveId: string; holder: PlayerId | null; previous: PlayerId | null; at: Coord }
   | { t: 'influence'; playerId: PlayerId; gained: number; total: number }
-  | { t: 'match_finished'; winners: PlayerId[]; reason: string };
+  | { t: 'match_finished'; winners: PlayerId[]; reason: string }
+  | { t: 'embarked'; unitId: UnitId; owner: PlayerId; transportId: UnitId; from: Coord; to: Coord; tick: number }
+  | { t: 'disembarked'; unitId: UnitId; owner: PlayerId; transportId: UnitId; from: Coord; to: Coord; tick: number }
+  | { t: 'scorched'; at: Coord; by: PlayerId; cityId: CityId | null; foodLost: number; gold: number }
+  | { t: 'obelisk_built'; at: Coord; by: PlayerId; structureId: string }
+  | { t: 'structure_destroyed'; structureId: string; kind: string; owner: PlayerId; at: Coord; by: PlayerId }
+  | { t: 'ruins_looted'; at: Coord; playerId: PlayerId; unitId: UnitId; reward: string; amount: number }
+  | { t: 'world_event'; eventId: string; phase: 'start' | 'end'; endTurn: number }
+  | { t: 'momentum'; unitId: UnitId; owner: PlayerId }
+  | { t: 'plunder'; playerId: PlayerId; cityId: CityId; gold: number };
 
 /** Событие с видимостью: список игроков, которым его можно показать. */
 export interface StoredEvent {

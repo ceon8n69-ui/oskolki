@@ -400,3 +400,48 @@ test('этап 4: партия завершается по лимиту ходо
   const { rows: [res] } = await db.query('SELECT result FROM matches WHERE id=$1', [m.id]);
   assert.equal(res.result.reason, 'influence_turn_limit');
 });
+
+test('этап 5: архипелаг, новые народы, обелиск через API, груз и сооружения переживают перезагрузку, ход воспроизводим', async () => {
+  const t1 = await devLogin('Руна');
+  const m = (await call('POST', '/api/matches', t1, { preset: 'islands', faction: 'ruins' })).json;
+  await call('POST', `/api/matches/${m.id}/bots`, t1, { count: 3 });
+  assert.equal((await call('POST', `/api/matches/${m.id}/start`, t1)).json.phase, 'planning');
+  const s1 = (await call<StateResponse>('GET', `/api/matches/${m.id}/state`, t1)).json;
+  assert.deepEqual(s1.view.structures, []);
+  assert.ok(Array.isArray(s1.view.worldEvents));
+  assert.equal(s1.view.players.find(p => p.id === s1.view.me.id)!.faction, 'ruins');
+  // Обелиск: пехота выходит из столицы (в городе обелиск не ставится), затем строит.
+  const me = s1.view.me.id;
+  const inf = s1.view.units.find(x => x.owner === me && x.type === 'infantry')!;
+  const r0 = await call('POST', `/api/matches/${m.id}/orders`, t1, { turn: 1, order: { kind: 'unit', unitId: inf.id, mode: 'build', build: 'obelisk', path: [] }, idempotencyKey: randomUUID() });
+  assert.equal(r0.json.error ?? r0.json.reason, 'obelisk_in_city', JSON.stringify(r0.json));
+  const step = (await call('GET', `/api/matches/${m.id}/preview/moves?unitId=${inf.id}`, t1)).json.tiles.find((t: { cost: number }) => t.cost <= 1);
+  await call('POST', `/api/matches/${m.id}/orders`, t1, { turn: 1, order: { kind: 'unit', unitId: inf.id, mode: 'move', path: [{ x: step.x, y: step.y }] }, idempotencyKey: randomUUID() });
+  await call('POST', `/api/matches/${m.id}/ready`, t1, { turn: 1, ready: true });
+  assert.ok(await game.processTurn(m.id, 1));
+  const r = await call('POST', `/api/matches/${m.id}/orders`, t1, { turn: 2, order: { kind: 'unit', unitId: inf.id, mode: 'build', build: 'obelisk', path: [] }, idempotencyKey: randomUUID() });
+  assert.equal(r.json.ok, true, JSON.stringify(r.json));
+  assert.equal(r.json.reserved.gold, BALANCE.obelisks.goldCost);
+  await call('POST', `/api/matches/${m.id}/ready`, t1, { turn: 2, ready: true });
+  assert.ok(await game.processTurn(m.id, 2));
+  await assertReplayable(m.id, 2);
+  const s2 = (await call<StateResponse>('GET', `/api/matches/${m.id}/state`, t1)).json;
+  assert.equal(s2.view.structures.length, 1);
+  assert.equal(s2.view.structures[0].linked, true);
+  // Груз и состояние мира сохраняются в таблицах и читаются обратно.
+  invalidateCachedState(m.id);
+  const live = await loadState(db, m.id);
+  assert.equal(live.world.structures.length, 1);
+  const ship = { ...live.units[0], id: 'u9001', type: 'transport', owner: me, carriedBy: undefined };
+  const water = live.map.terrain.findIndex(t => t <= 1);
+  ship.x = water % live.map.width;
+  ship.y = Math.floor(water / live.map.width);
+  const rider = { ...live.units[1], id: 'u9002', owner: me, type: 'infantry', x: ship.x, y: ship.y, carriedBy: 'u9001' };
+  live.units.push(ship, rider);
+  const { withTx } = await import('../../src/server/db/pool.ts');
+  const { saveState } = await import('../../src/server/store.ts');
+  await withTx(db, tx => saveState(tx, live));
+  const again = await loadState(db, m.id);
+  assert.equal(again.units.find(x => x.id === 'u9002')!.carriedBy, 'u9001');
+  assert.equal(stateHash(again), stateHash(live));
+});

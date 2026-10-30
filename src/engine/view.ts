@@ -5,6 +5,7 @@ import type { GameState, PlayerId, StoredEvent } from '../shared/types.ts';
 import { idx } from './grid.ts';
 import { incomeFor } from './resolve.ts';
 import { computeVision, canSeeUnit } from './vision.ts';
+import { linkedObelisks } from './world.ts';
 import type { Vision } from './vision.ts';
 import type { PlayerView, ChunkView } from '../shared/protocol.ts';
 
@@ -17,13 +18,24 @@ export function playerView(b: Balance, state: GameState, playerId: PlayerId, vis
   const explored = state.explored[playerId];
   const intel = state.intel[playerId] ?? { units: {}, cities: {} };
 
+  const cargo = new Map<string, number>();
+  for (const u of state.units) if (u.carriedBy) cargo.set(u.carriedBy, (cargo.get(u.carriedBy) ?? 0) + 1);
+  const withCargo = <T extends { id: string }>(o: T): T & { cargo?: number } => (cargo.has(o.id) ? { ...o, cargo: cargo.get(o.id) } : o);
   const units = state.units
     .filter(u => canSeeUnit(b, state, playerId, v, u))
     .map(u =>
-      u.owner === playerId
+      withCargo(u.owner === playerId
         ? { ...u, statuses: u.statuses.map(s => ({ ...s })), perks: [...u.perks], stale: false as const }
-        : { id: u.id, owner: u.owner, type: u.type, x: u.x, y: u.y, hp: u.hp, maxHp: u.maxHp, rank: u.rank, statuses: u.statuses.map(s => ({ ...s })), stale: false as const },
+        : { id: u.id, owner: u.owner, type: u.type, x: u.x, y: u.y, hp: u.hp, maxHp: u.maxHp, rank: u.rank, statuses: u.statuses.map(s => ({ ...s })), stale: false as const }),
     );
+  const linked = new Set(linkedObelisks(b, state, playerId).map(o => o.id));
+  const structures = state.world.structures
+    .filter(s => s.owner === playerId || v.visible[idx(state.map, s.x, s.y)])
+    .map(s => ({ id: s.id, kind: s.kind, owner: s.owner, x: s.x, y: s.y, linked: s.owner === playerId ? linked.has(s.id) : null }));
+  const worldEvents = state.world.events
+    .filter(e => e.startTurn <= state.turn && state.turn <= e.endTurn)
+    .map(e => ({ id: e.id, name: b.worldEvents.list[e.id]?.name ?? e.id, description: b.worldEvents.list[e.id]?.description ?? '', startTurn: e.startTurn, endTurn: e.endTurn }));
+  const lootedRuins = state.world.lootedRuins.filter(i => explored?.[i]);
   const visibleIds = new Set(units.map(u => u.id));
   const staleUnits = Object.values(intel.units)
     .filter(su => !visibleIds.has(su.id))
@@ -57,6 +69,9 @@ export function playerView(b: Balance, state: GameState, playerId: PlayerId, vis
       proposal: t.proposal && (t.a === playerId || t.b === playerId) ? t.proposal : null,
     })),
     mode: structuredClone(state.mode),
+    structures,
+    worldEvents,
+    lootedRuins,
   };
 }
 

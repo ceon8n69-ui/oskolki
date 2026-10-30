@@ -8,6 +8,7 @@ import { Feature, NEUTRAL, Terrain } from '../shared/types.ts';
 import { dist, featuresAt, idx, terrainAt } from './grid.ts';
 import { cityBuildingEffect } from './supply.ts';
 import { commanderAura, rangeOf, techs, traitsOf, unitClass, waterDistance } from './stats.ts';
+import { inResonance, resonanceMul } from './world.ts';
 
 export interface Modifier {
   id: string;
@@ -30,6 +31,8 @@ export interface CombatContext {
   /** Видел ли владелец цели атакующего в начале хода (для засады). */
   seenAtStart?: (attacker: UnitState, targetOwner: string) => boolean;
   siegeSupport?: Set<string>;
+  /** «Боевой клич» командира Пепельных орд. */
+  warcry?: Set<string>;
 }
 
 export function maxHp(_b: Balance, u: Pick<UnitState, 'maxHp'>): number {
@@ -41,7 +44,7 @@ export function hasStatus(u: UnitState, id: string): boolean {
 }
 
 function friendsAdjacent(state: GameState, u: UnitState): UnitState[] {
-  return state.units.filter(o => o !== u && o.owner === u.owner && o.hp > 0 && dist(o, u) === 1);
+  return state.units.filter(o => o !== u && o.owner === u.owner && o.hp > 0 && !o.carriedBy && dist(o, u) === 1);
 }
 
 function cityAt(state: GameState, x: number, y: number) {
@@ -93,6 +96,14 @@ export function attackValue(b: Balance, state: GameState, u: UnitState, target: 
   if (friendsAdjacent(state, u).some(f => hasAbility(b, f.type, 'inspire'))) push('inspire', 1.1);
   const tac = commanderAura(b, state, u.owner, u, 'tactics');
   if (tac) push('tactics', 1 + 0.1 * tac);
+  if (ctx.warcry?.has(u.id)) push('warcry', 1.2);
+  // Метатель огня: цель в лесу горит.
+  if (hasAbility(b, u.type, 'incendiary') && terrainAt(state.map, target.x, target.y) === Terrain.Forest) push('incendiary', 1.3);
+  // Хранители руин: поле резонанса усиливает, без узла — слабее.
+  if (tr.buildObelisk) {
+    if (inResonance(b, state, u)) push('resonance', resonanceMul(b, state, u.owner));
+    else if (tr.severedMul) push('severed', tr.severedMul);
+  }
   // Состояния.
   if (hasStatus(u, 'suppressed') && !u.perks?.includes('suppress_resist')) push('suppressed', b.combat.suppressedAttack);
   if (hasStatus(u, 'unsupplied')) push('unsupplied', b.combat.unsuppliedMultiplier);
@@ -123,6 +134,7 @@ export function defenseValue(b: Balance, state: GameState, u: UnitState, mods: M
   if (friends.some(f => hasAbility(b, f.type, 'cover'))) push('cover', b.combat.coverDefense);
   const fm = traitsOf(b, state, u.owner).formation;
   if (fm && friends.length >= fm.minAllies) push('formation', fm.defenseMul + techs(b, state, u.owner).formationBonus);
+  if (traitsOf(b, state, u.owner).buildObelisk && inResonance(b, state, u)) push('resonance', resonanceMul(b, state, u.owner));
   if (hasStatus(u, 'unsupplied')) push('unsupplied', b.combat.unsuppliedMultiplier);
   return d;
 }

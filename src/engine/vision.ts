@@ -5,6 +5,7 @@ import { NEUTRAL } from '../shared/types.ts';
 import { idx, inBounds, terrainAt } from './grid.ts';
 import { commanderAura, techs, visionOf } from './stats.ts';
 import { allies } from './diplomacy.ts';
+import { linkedObelisks } from './world.ts';
 
 export interface Vision {
   /** 1 — клетка видна сейчас. */
@@ -49,6 +50,13 @@ export function computeVision(b: Balance, state: GameState, playerId: PlayerId, 
     stamp(state, visible, c.x, c.y, b.cities.visionRadius + cityBonus);
     stamp(state, close, c.x, c.y, 1);
   }
+  // Связанные обелиски — постоянные источники обзора.
+  for (const src of sources) {
+    for (const o of linkedObelisks(b, state, src)) {
+      stamp(state, visible, o.x, o.y, b.obelisks.visionRadius);
+      stamp(state, close, o.x, o.y, 1);
+    }
+  }
   for (const e of extra) if (e.owner === playerId) stamp(state, visible, e.x, e.y, e.r);
   return { visible, close };
 }
@@ -69,6 +77,8 @@ export function canSeeUnitAt(b: Balance, state: GameState, v: Vision, x: number,
 
 export function canSeeUnit(b: Balance, state: GameState, viewer: PlayerId, v: Vision, u: UnitState): boolean {
   if (u.owner === viewer) return true;
+  // Груз транспорта противнику не виден: видно только число отрядов на борту.
+  if (u.carriedBy) return false;
   return canSeeUnitAt(b, state, v, u.x, u.y);
 }
 

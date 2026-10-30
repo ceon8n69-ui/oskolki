@@ -8,7 +8,8 @@ export type StepKind =
   | 'build_start' | 'road' | 'route_paused'
   | 'zoc_stop' | 'suppressed' | 'knockback' | 'fort' | 'forest' | 'commander_ability' | 'commander_fallen' | 'commander_respawned'
   | 'healed' | 'city_grew' | 'building' | 'supply_warning'
-  | 'diplomacy' | 'objective' | 'influence' | 'match_finished';
+  | 'diplomacy' | 'objective' | 'influence' | 'match_finished'
+  | 'embark' | 'disembark' | 'scorch' | 'obelisk' | 'structure_destroyed' | 'ruins_looted' | 'world_event' | 'momentum' | 'plunder';
 
 export interface PlaybackStep {
   id: number;
@@ -66,6 +67,8 @@ export function buildTimeline(events: StoredEvent[], myPlayerId: string, opts: T
       if (e.t === 'move' && e.tick === tick) add('move', t, moveMs, e, e.to, mine(e.owner));
       if (e.t === 'move_blocked' && e.tick === tick) add('blocked', t + moveMs * 0.5, 400, e, e.at, mine(e.owner));
       if (e.t === 'zoc_stop' && e.tick === tick) add('zoc_stop', t + moveMs, 400, e, e.at, mine(e.owner));
+      if (e.t === 'embarked' && e.tick === tick) add('embark', t, moveMs, e, e.to, mine(e.owner));
+      if (e.t === 'disembarked' && e.tick === tick) add('disembark', t, moveMs, e, e.to, mine(e.owner));
     }
     t += moveMs;
   }
@@ -112,6 +115,7 @@ export function buildTimeline(events: StoredEvent[], myPlayerId: string, opts: T
     else if (e.t === 'knockback') add('knockback', t, 350, e, e.to, true);
     else if (e.t === 'commander_fallen') add('commander_fallen', t, 800, e, e.at, true);
     else if (e.t === 'xp' && e.rankUp) add('rank_up', t, 700, e, null, true);
+    else if (e.t === 'momentum') add('momentum', t, 400, e, null, true);
     i++;
   }
 
@@ -121,6 +125,10 @@ export function buildTimeline(events: StoredEvent[], myPlayerId: string, opts: T
     if (e.t === 'city_contested') add('contest', t, 700, e, e.at, mine(e.by) || mine(e.owner));
     if (e.t === 'city_contest_cleared') add('contest_cleared', t, 500, e, e.at, false);
     if (e.t === 'city_captured') add('capture', t, 900, e, e.at, mine(e.to) || mine(e.from));
+    if (e.t === 'plunder') add('plunder', t + 600, 500, e, null, true);
+    if (e.t === 'structure_destroyed') add('structure_destroyed', t, 700, e, e.at, mine(e.owner) || mine(e.by));
+    if (e.t === 'ruins_looted') add('ruins_looted', t, 700, e, e.at, mine(e.playerId));
+    if (e.t === 'momentum') add('momentum', t, 400, e, null, true);
   }
   if (cap.length) t += 900;
 
@@ -130,6 +138,8 @@ export function buildTimeline(events: StoredEvent[], myPlayerId: string, opts: T
     if (e.t === 'road_built') add('road', t, 600, e, e.at, mine(e.by));
     if (e.t === 'fort_built') add('fort', t, 600, e, e.at, mine(e.by));
     if (e.t === 'forest_planted') add('forest', t, 600, e, e.at, mine(e.by));
+    if (e.t === 'scorched') add('scorch', t, 700, e, e.at, true);
+    if (e.t === 'obelisk_built') add('obelisk', t, 700, e, e.at, mine(e.by));
     if (e.t === 'building_completed') add('building', t, 600, e, e.at, true);
     if (e.t === 'city_grew') add('city_grew', t, 600, e, e.at, true);
     if (e.t === 'healed') add('healed', t, 400, e, null, false);
@@ -144,6 +154,7 @@ export function buildTimeline(events: StoredEvent[], myPlayerId: string, opts: T
     if (e.t === 'objective_held') add('objective', t, 600, e, e.at, true);
     if (e.t === 'influence') add('influence', t, 400, e, null, true);
     if (e.t === 'diplomacy_changed' || e.t === 'diplomacy_proposed' || e.t === 'diplomacy_break_announced' || e.t === 'diplomacy_declined') add('diplomacy', t, 800, e, null, true);
+    if (e.t === 'world_event') add('world_event', t, 1000, e, null, true);
     if (e.t === 'match_finished') add('match_finished', t + 400, 1500, e, null, true);
   }
   t += 400;

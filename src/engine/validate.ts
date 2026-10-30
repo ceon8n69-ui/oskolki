@@ -9,6 +9,7 @@ import { canAttackAfterMove, commanderUnit, moveOf, moveProfile, rangeOf, roadGo
 import type { Vision } from './vision.ts';
 import { canSeeUnit } from './vision.ts';
 import { findTreaty, isHostile, mayEnter, statusBetween } from './diplomacy.ts';
+import { coastal, embarkTarget, freeSeats, isNaval, nearestForeignCity, obelisksOf, onMap } from './world.ts';
 
 export type ValidationResult = { ok: true } | { ok: false; reason: string };
 
@@ -55,6 +56,7 @@ export function reservedResources(b: Balance, state: GameState, playerId: Player
       if (o.build === 'road') r.gold += roadGoldCost(b, state, playerId);
       if (o.build === 'fort') { r.gold += b.forts.goldCost; r.wood += b.forts.woodCost; }
       if (o.build === 'forest') r.gold += b.plantForest.goldCost;
+      if (o.build === 'obelisk') r.gold += b.obelisks.goldCost;
     }
   }
   return r;
@@ -99,6 +101,8 @@ function canBuild(b: Balance, state: GameState, unit: UnitState, kind: string): 
     if (hasAbility(b, unit.type, 'plant_forest')) return null;
     return tr.plantForest && builder && techs(b, state, unit.owner).plantForestAny ? null : 'unit_cannot_build';
   }
+  if (kind === 'scorch') return tr.scorch ? null : 'unit_cannot_build';
+  if (kind === 'obelisk') return hasAbility(b, unit.type, 'build_obelisk') || (tr.buildObelisk && builder) ? null : 'unit_cannot_build';
   return 'unknown_build';
 }
 
@@ -128,6 +132,7 @@ export function validateOrder(
       if (order.mode === 'hold') return order.path.length ? fail('hold_has_path') : { ok: true };
       if (order.mode === 'build') {
         if (order.path.length) return fail('build_has_path');
+        if (unit.carriedBy || isNaval(b, unit.type)) return fail('unit_cannot_build');
         const kind = order.build ?? 'road';
         const who = canBuild(b, state, unit, kind);
         if (who) return fail(who);
@@ -143,6 +148,14 @@ export function validateOrder(
         } else if (kind === 'forest') {
           if (terrainAt(state.map, unit.x, unit.y) !== Terrain.Plains || onCity) return fail('forest_needs_plains');
           if (!inTerritory(b, state, playerId, unit)) return fail('outside_territory');
+        } else if (kind === 'scorch') {
+          if (onCity) return fail('scorch_in_city');
+          const burnable = (f & (Feature.Road | Feature.Fort | Feature.ResourceWood)) || terrainAt(state.map, unit.x, unit.y) === Terrain.Forest;
+          if (!burnable && !nearestForeignCity(state, playerId, unit, b.scorch.radius)) return fail('nothing_to_scorch');
+        } else if (kind === 'obelisk') {
+          if (onCity) return fail('obelisk_in_city');
+          if (state.world.structures.some(s => s.x === unit.x && s.y === unit.y)) return fail('structure_exists');
+          if (obelisksOf(state, playerId).some(o => dist(o, unit) < b.obelisks.minSpacing)) return fail('obelisk_too_close');
         }
         const need = reservedResources(b, state, playerId, [order]);
         if (!canAfford(player, need, reservedBy(o => o.kind === 'unit' && o.unitId === unit.id))) return fail(need.wood ? 'not_enough_resources' : 'not_enough_gold');
@@ -150,6 +163,43 @@ export function validateOrder(
       }
       for (const s of order.path) if (!inBounds(state.map, s.x, s.y)) return fail('out_of_bounds');
       const profile = moveProfile(b, state, unit);
+      // Высадка с транспорта: один шаг на соседнюю сушу, весь ход.
+      if (unit.carriedBy) {
+        if (long || order.path.length !== 1) return fail('disembark_one_step');
+        const s = order.path[0];
+        if (dist(unit, s) !== 1 || !isLandPassable(b, state.map, s.x, s.y, profile)) return fail('bad_landing');
+        if (!mayEnter(b, state, playerId, unit, s)) return fail('territory_closed');
+        const blocker = state.units.find(u => u.hp > 0 && onMap(u) && u.x === s.x && u.y === s.y && (u.owner !== playerId || u.id !== unit.id));
+        if (blocker && canSeeUnit(b, state, playerId, vision, blocker)) return fail(blocker.owner === playerId ? 'landing_occupied' : 'path_through_enemy');
+        if (order.mode === 'move') return { ok: true };
+        if (!canAttackAfterMove(b, state, unit)) return fail('cannot_attack_after_move');
+        const target = state.units.find(u => u.id === order.targetUnitId);
+        if (!target || target.hp <= 0 || !canSeeUnit(b, state, playerId, vision, target)) return fail('target_not_visible');
+        if (target.owner === playerId) return fail('friendly_target');
+        if (!isHostile(b, state, playerId, target.owner)) return fail('treaty_forbids_attack');
+        if (dist(s, target) > rangeOf(b, state, unit) || sameTile(s, target)) return fail('target_out_of_range');
+        return { ok: true };
+      }
+      // Погрузка: последний шаг — клетка своего транспорта со свободным местом.
+      const last = order.path[order.path.length - 1];
+      const ship = last ? embarkTarget(b, state, unit, last) : null;
+      if (ship) {
+        if (long || order.mode !== 'move') return fail('embark_move_only');
+        const prefix = order.path.slice(0, -1);
+        const pre = pathCost(b, state.map, unit, prefix, profile);
+        if (!pre.ok) return pre;
+        const from = prefix.length ? prefix[prefix.length - 1] : unit;
+        if (dist(from, last) !== 1) return fail('bad_path');
+        const embarking = otherOrders.filter(o => o.kind === 'unit' && o.unitId !== unit.id && o.path.length && sameTile(o.path[o.path.length - 1], last)).length;
+        if (embarking >= (freeSeats(b, state, ship) ?? 0)) return fail('transport_full');
+        const budget = moveOf(b, state, unit, forcedMarchUnits(b, state, playerId, otherOrders));
+        if (pre.cost + b.naval.embarkCost > budget + 1e-9) return fail('not_enough_movement');
+        for (const s of prefix) {
+          const blocker = state.units.find(u => u.hp > 0 && u.owner !== playerId && u.x === s.x && u.y === s.y);
+          if (blocker && canSeeUnit(b, state, playerId, vision, blocker)) return fail('path_through_enemy');
+        }
+        return { ok: true };
+      }
       const pc = pathCost(b, state.map, unit, order.path, profile);
       if (!pc.ok) return pc;
       if (long) {
@@ -194,6 +244,7 @@ export function validateOrder(
       if (city.contestedBy) return fail('city_contested');
       if (!b.units[order.unitType]) return fail('unknown_unit');
       if (!isUnitUnlocked(b, player, order.unitType)) return fail('unit_locked');
+      if (isNaval(b, order.unitType) && !city.buildings.includes('port')) return fail('needs_port');
       if (city.queue.length >= b.cities.maxQueue) return fail('queue_full');
       if (b.economy.deficitRecruitBlocked && player.gold < 0) return fail('deficit');
       const c = unitCost(b, state, playerId, order.unitType);
@@ -209,6 +260,7 @@ export function validateOrder(
       const rule = b.buildings[order.building];
       if (!rule) return fail('unknown_building');
       if (!isBuildingUnlocked(b, player, order.building)) return fail('building_locked');
+      if (rule.coastal && !coastal(state, city)) return fail('not_coastal');
       if (city.buildings.includes(order.building) || city.queue.some(q => q.kind === 'building' && q.unitType === order.building)) return fail('building_exists');
       if (city.queue.length >= b.cities.maxQueue) return fail('queue_full');
       const need = { gold: 0, wood: rule.cost.wood ?? 0, iron: rule.cost.iron ?? 0, crystal: rule.cost.crystal ?? 0 };

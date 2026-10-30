@@ -4,7 +4,8 @@ import { hasAbility } from '../shared/balance.ts';
 import type { AttackPreview } from '../shared/protocol.ts';
 import type { Coord, GameState, Order, PlayerId } from '../shared/types.ts';
 import { computeDamage } from './combat.ts';
-import { idx } from './grid.ts';
+import { DIRS8, idx, isLandPassable } from './grid.ts';
+import { freeSeats, isNaval } from './world.ts';
 import { reachable } from './path.ts';
 import { moveOf, moveProfile } from './stats.ts';
 import { forcedMarchUnits, validateOrder } from './validate.ts';
@@ -34,13 +35,40 @@ export function knownZoc(b: Balance, state: GameState, playerId: PlayerId, visio
   return out;
 }
 
-export function moveOptions(b: Balance, state: GameState, playerId: PlayerId, unitId: string, vision: Vision, orders: Order[] = []): { x: number; y: number; cost: number }[] {
+export function moveOptions(b: Balance, state: GameState, playerId: PlayerId, unitId: string, vision: Vision, orders: Order[] = []): { x: number; y: number; cost: number; embark?: boolean; disembark?: boolean }[] {
   const u = state.units.find(x => x.id === unitId && x.owner === playerId);
   if (!u) return [];
   const budget = moveOf(b, state, u, forcedMarchUnits(b, state, playerId, orders));
+  const profile = moveProfile(b, state, u);
+  const blockers = knownBlockers(b, state, playerId, vision);
+  // С борта — только высадка на соседнюю свободную сушу.
+  if (u.carriedBy) {
+    const out: { x: number; y: number; cost: number; disembark?: boolean }[] = [];
+    for (const [dx, dy] of DIRS8) {
+      const x = u.x + dx, y = u.y + dy;
+      if (!isLandPassable(b, state.map, x, y, profile) || blockers.has(idx(state.map, x, y))) continue;
+      if (state.units.some(o => o.owner === playerId && !o.carriedBy && o.x === x && o.y === y)) continue;
+      out.push({ x, y, cost: budget, disembark: true });
+    }
+    return out;
+  }
   const stopTiles = hasAbility(b, u.type, 'ignore_zoc') ? undefined : knownZoc(b, state, playerId, vision);
-  const r = reachable(b, state.map, u, budget, knownBlockers(b, state, playerId, vision), { profile: moveProfile(b, state, u), stopTiles });
-  return [...r].map(([i, cost]) => ({ x: i % state.map.width, y: Math.floor(i / state.map.width), cost }));
+  const r = reachable(b, state.map, u, budget, blockers, { profile, stopTiles });
+  const out: { x: number; y: number; cost: number; embark?: boolean }[] = [...r].map(([i, cost]) => ({ x: i % state.map.width, y: Math.floor(i / state.map.width), cost }));
+  // Погрузка на свои транспорты рядом с достижимыми клетками.
+  if (!isNaval(b, u.type)) {
+    for (const t of state.units) {
+      if (t.owner !== playerId || (freeSeats(b, state, t) ?? 0) <= 0) continue;
+      let best = Infinity;
+      for (const [dx, dy] of DIRS8) {
+        const x = t.x + dx, y = t.y + dy;
+        if (x === u.x && y === u.y) best = 0;
+        else if (x >= 0 && y >= 0 && x < state.map.width && y < state.map.height) best = Math.min(best, r.get(idx(state.map, x, y)) ?? Infinity);
+      }
+      if (best + b.naval.embarkCost <= budget + 1e-9) out.push({ x: t.x, y: t.y, cost: best + b.naval.embarkCost, embark: true });
+    }
+  }
+  return out;
 }
 
 /**

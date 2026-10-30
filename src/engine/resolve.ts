@@ -24,15 +24,18 @@ import { DIRS8, dist, idx, inBounds, isLandPassable, landMoveCost } from './grid
 import { hashParts, turnSeed } from './rng.ts';
 import { planRoutes, updateRoutesAfterMove } from './routes.ts';
 import {
-  baseMaxHp, commanderAura, commanderUnit, moveOf, moveProfile, playerOf, rangeOf, techs, unitCost, waterDistance,
+  baseMaxHp, commanderAura, commanderUnit, moveOf, moveProfile, playerOf, rangeOf, techs, traitsOf, unitCost, waterDistance, worldEffect, worldHas,
 } from './stats.ts';
 import { cityBuildingEffect, computeSupply } from './supply.ts';
 import { validateAll } from './validate.ts';
 import { checkVictory, exertsZocOn, isHostile, mayEnter, objectiveHolder, treatyOf } from './diplomacy.ts';
 import type { ExtraVision, Vision } from './vision.ts';
 import { canSeeUnitAt, computeAllVision, updateExploredAndIntel } from './vision.ts';
+import {
+  embarkTarget, freeSeats, inResonance, isLootableRuin, isNaval, linkedObelisks, nearestForeignCity, onMap, rollWorldEvent, ruinReward,
+} from './world.ts';
 
-export const RULES_VERSION = 'rules-3.0.0';
+export const RULES_VERSION = 'rules-4.0.0';
 
 export interface ResolveResult {
   state: GameState;
@@ -56,6 +59,8 @@ interface TurnCtx {
   rally: Map<PlayerId, Set<string>>;
   acted: Set<string>; // двигались или атаковали — не лечатся
   startPos: Map<string, Coord>;
+  warcry: Set<string>;
+  surge: Set<PlayerId>;
 }
 
 function removeStatus(u: UnitState, id: string): void {
@@ -74,7 +79,7 @@ export function resolveTurn(b: Balance, input: GameState, orders: SubmittedOrder
   const log = new EventLog();
   const seed = turnSeed(state.map.seed, state.turn);
   const players = state.players.map(p => p.id);
-  const ctx: TurnCtx = { extraVision: [], siegeSupport: new Set(), forcedMarch: new Set(), rally: new Map(), acted: new Set(), startPos: new Map() };
+  const ctx: TurnCtx = { extraVision: [], siegeSupport: new Set(), forcedMarch: new Set(), rally: new Map(), acted: new Set(), startPos: new Map(), warcry: new Set(), surge: new Set() };
   for (const u of state.units) ctx.startPos.set(u.id, { x: u.x, y: u.y });
 
   // Истёкшие состояния (например, подавление прошлого хода).
@@ -185,6 +190,7 @@ export function resolveTurn(b: Balance, input: GameState, orders: SubmittedOrder
   log.phase = 'combat';
   const combatCtx: CombatContext = {
     siegeSupport: ctx.siegeSupport,
+    warcry: ctx.warcry,
     seenAtStart: (attacker, targetOwner) => {
       const v = vision0x.get(targetOwner);
       const p = ctx.startPos.get(attacker.id) ?? attacker;
@@ -196,6 +202,8 @@ export function resolveTurn(b: Balance, input: GameState, orders: SubmittedOrder
   // ---------- 8. Захват объектов ----------
   log.phase = 'capture';
   resolveCapture(b, state, log, vision1, players);
+  resolveStructures(b, state, log, vision1, players);
+  lootRuins(b, state, log, vision1, players);
 
   // ---------- 9. Строительство, экономика, снабжение ----------
   log.phase = 'economy';
@@ -216,6 +224,12 @@ export function resolveTurn(b: Balance, input: GameState, orders: SubmittedOrder
     } else if (kind === 'forest') {
       state.map.terrain[i] = Terrain.Forest;
       log.push({ t: 'forest_planted', at: { x: u.x, y: u.y }, by: u.owner }, [...watchers, u.owner]);
+    } else if (kind === 'scorch') {
+      applyScorch(b, state, alive, log, watchers);
+    } else if (kind === 'obelisk') {
+      const sid = `s${state.world.nextStructureId++}`;
+      state.world.structures.push({ id: sid, kind: 'obelisk', owner: u.owner, x: u.x, y: u.y, builtTurn: state.turn });
+      log.push({ t: 'obelisk_built', at: { x: u.x, y: u.y }, by: u.owner, structureId: sid }, [...watchers, u.owner]);
     }
     ctx.acted.add(id);
     alive.xp += b.xp.perBuild;
@@ -238,6 +252,7 @@ export function resolveTurn(b: Balance, input: GameState, orders: SubmittedOrder
   // ---------- 10. Итог: дипломатия, условия победы ----------
   log.phase = 'finalize';
   resolveDiplomacy(b, state, diplomacyOrders, log, players);
+  advanceWorldEvents(b, state, log, players);
   const fin = state.mode.finished ? null : checkVictory(b, state);
   if (fin) {
     state.mode.finished = { ...fin, turn: state.turn };
@@ -253,6 +268,8 @@ export function resolveTurn(b: Balance, input: GameState, orders: SubmittedOrder
 export function buildCost(b: Balance, state: GameState, owner: PlayerId, kind: BuildKind): { gold: number; wood: number } {
   if (kind === 'fort') return { gold: b.forts.goldCost, wood: b.forts.woodCost };
   if (kind === 'forest') return { gold: b.plantForest.goldCost, wood: 0 };
+  if (kind === 'obelisk') return { gold: b.obelisks.goldCost, wood: 0 };
+  if (kind === 'scorch') return { gold: 0, wood: 0 };
   const tr = playerOf(state, owner) ? b.factions[playerOf(state, owner)!.faction]?.traits : undefined;
   return { gold: Math.max(1, Math.round(b.roads.goldCost * (tr?.roadCostMul ?? 1) * techs(b, state, owner).roadCostMul)), wood: 0 };
 }
@@ -362,6 +379,12 @@ function applyCommanderOrder(b: Balance, state: GameState, p: PlayerState, o: Ex
   } else if (id === 'forced_march') {
     for (const u of near) ctx.forcedMarch.add(u.id);
     affected = near.map(u => u.id);
+  } else if (id === 'warcry') {
+    for (const u of near) ctx.warcry.add(u.id);
+    affected = near.map(u => u.id);
+  } else if (id === 'resonance_surge') {
+    ctx.surge.add(p.id);
+    affected = sortById(state.units.filter(u => u.owner === p.id && inResonance(b, state, u))).map(u => u.id);
   } else if (id === 'scout_pulse' && o.target) {
     ctx.extraVision.push({ owner: p.id, x: o.target.x, y: o.target.y, r: ab.radius ?? 3 });
   }
@@ -382,25 +405,42 @@ function resolveMovement(
 ): Map<string, { executed: number; blocked: string | null }> {
   const map = state.map;
   const occupant = new Map<number, UnitState>();
-  for (const u of state.units) occupant.set(idx(map, u.x, u.y), u);
+  for (const u of state.units) if (onMap(u)) occupant.set(idx(map, u.x, u.y), u);
+  const byId = new Map(state.units.map(u => [u.id, u]));
 
-  interface Mover { u: UnitState; path: Coord[]; step: number; spent: number; budget: number; stopped: boolean; blockedReason?: string; profile: ReturnType<typeof moveProfile> }
+  interface Mover { u: UnitState; path: Coord[]; step: number; spent: number; budget: number; stopped: boolean; blockedReason?: string; profile: ReturnType<typeof moveProfile>; disembark: boolean }
   const movers: Mover[] = [];
   for (const u of state.units) {
     const o = unitOrders.get(u.id);
     if (!o || o.mode === 'hold' || o.mode === 'build' || !o.path.length) continue;
-    movers.push({ u, path: o.path, step: 0, spent: 0, budget: moveOf(b, state, u, ctx.forcedMarch), stopped: false, profile: moveProfile(b, state, u) });
+    // Высадка: один шаг с борта на сушу в первом такте, расходует весь ход.
+    const disembark = !!u.carriedBy;
+    movers.push({ u, path: disembark ? o.path.slice(0, 1) : o.path, step: 0, spent: 0, budget: disembark ? Infinity : moveOf(b, state, u, ctx.forcedMarch), stopped: false, profile: moveProfile(b, state, u), disembark });
   }
   movers.sort((a, c) => (a.u.id < c.u.id ? -1 : 1));
   const maxTicks = movers.reduce((m, x) => Math.max(m, x.path.length), 0);
-  const zocUnits = state.units.filter(u => hasAbility(b, u.type, 'zoc'));
+  const zocUnits = state.units.filter(u => hasAbility(b, u.type, 'zoc') && onMap(u));
 
   for (let tick = 0; tick < maxTicks; tick++) {
     const active = movers.filter(m => !m.stopped && m.step < m.path.length);
     if (!active.length) break;
     const want = new Map<Mover, Coord>();
+    const embarkWant = new Map<UnitState, Mover[]>(); // транспорт → желающие погрузиться
     for (const m of active) {
       const next = m.path[m.step];
+      if (m.disembark && tick > 0) {
+        m.stopped = true;
+        continue;
+      }
+      const ship = !m.disembark && m.step === m.path.length - 1 && dist(m.u, next) === 1 ? embarkTarget(b, state, m.u, next) : null;
+      if (ship) {
+        if (m.spent + b.naval.embarkCost > m.budget + 1e-9) {
+          m.stopped = true;
+          continue;
+        }
+        (embarkWant.get(ship) ?? embarkWant.set(ship, []).get(ship)!).push(m);
+        continue;
+      }
       const c = landMoveCost(b, map, m.u, next, m.profile);
       if (c === null || m.spent + c > m.budget + 1e-9 || dist(m.u, next) !== 1) {
         m.stopped = true;
@@ -446,8 +486,25 @@ function resolveMovement(
       }
     }
 
+    // Погрузка: транспорт должен стоять на месте в этом такте; места — по инициативе, ничья — по seed хода.
+    const embarks: { m: Mover; ship: UnitState }[] = [];
+    for (const [ship, list] of embarkWant) {
+      const sm = movers.find(x => x.u === ship);
+      const shipLeaves = !!sm && want.has(sm) && !blocked.has(sm);
+      list.sort((a, c) => b.units[c.u.type].initiative - b.units[a.u.type].initiative || hashParts(seed, tick, a.u.id) - hashParts(seed, tick, c.u.id) || (a.u.id < c.u.id ? -1 : 1));
+      const seats = freeSeats(b, state, ship) ?? 0;
+      list.forEach((m, k) => {
+        if (shipLeaves) blocked.set(m, 'transport_left');
+        else if (k >= seats) blocked.set(m, 'transport_full');
+        else embarks.push({ m, ship });
+      });
+      for (const m of list) if (blocked.has(m)) want.set(m, { x: ship.x, y: ship.y });
+    }
+    const embarking = new Set(embarks.map(e => e.m.u));
+
     // в) занятые клетки: блок, пока занимающий не уходит успешно (фиксированная точка)
     const leaving = (u: UnitState): boolean => {
+      if (embarking.has(u)) return true;
       const m = movers.find(x => x.u === u);
       return !!m && want.has(m) && !blocked.has(m);
     };
@@ -474,19 +531,63 @@ function resolveMovement(
       const fi = idx(map, mv.from.x, mv.from.y);
       if (occupant.get(fi) === mv.m.u) occupant.delete(fi);
     }
+    for (const e of embarks) {
+      const fi = idx(map, e.m.u.x, e.m.u.y);
+      if (occupant.get(fi) === e.m.u) occupant.delete(fi);
+    }
+    const disembarked: { m: Mover; from: Coord; to: Coord; ship: string }[] = [];
     for (const mv of moves) {
-      mv.m.spent += landMoveCost(b, map, mv.from, mv.to, mv.m.profile)!;
+      mv.m.spent += mv.m.disembark ? 0 : landMoveCost(b, map, mv.from, mv.to, mv.m.profile)!;
       mv.m.u.x = mv.to.x;
       mv.m.u.y = mv.to.y;
       mv.m.step++;
+      if (mv.m.disembark) {
+        disembarked.push({ m: mv.m, from: mv.from, to: mv.to, ship: mv.m.u.carriedBy! });
+        delete mv.m.u.carriedBy;
+        mv.m.u.route = null;
+        mv.m.stopped = true;
+      }
       occupant.set(idx(map, mv.to.x, mv.to.y), mv.m.u);
+    }
+    const embarkedNow: { m: Mover; from: Coord; ship: UnitState }[] = [];
+    for (const e of embarks) {
+      const from = { x: e.m.u.x, y: e.m.u.y };
+      e.m.u.carriedBy = e.ship.id;
+      e.m.u.route = null;
+      e.m.spent += b.naval.embarkCost;
+      e.m.step++;
+      e.m.stopped = true;
+      removeStatus(e.m.u, 'fortified');
+      embarkedNow.push({ m: e.m, from, ship: e.ship });
+    }
+    // Груз движется вместе с транспортом.
+    for (const u of state.units) {
+      if (!u.carriedBy) continue;
+      const t = byId.get(u.carriedBy);
+      if (t) {
+        u.x = t.x;
+        u.y = t.y;
+      }
     }
     // События движения: видны тем, кто видел отряд в начале или видит его клетку после шага.
     const visionNow = computeAllVision(b, state, ctx.extraVision);
     for (const mv of moves) {
+      if (mv.m.disembark) continue;
       log.push(
         { t: 'move', unitId: mv.m.u.id, owner: mv.m.u.owner, from: mv.from, to: mv.to, tick },
         visibleToUnitAt(b, state, vision0, mv.m.u, mv.from, players, [mv.to], visionNow),
+      );
+    }
+    for (const d of disembarked) {
+      log.push(
+        { t: 'disembarked', unitId: d.m.u.id, owner: d.m.u.owner, transportId: d.ship, from: d.from, to: d.to, tick },
+        visibleToUnitAt(b, state, visionNow, d.m.u, d.to, players),
+      );
+    }
+    for (const e of embarkedNow) {
+      log.push(
+        { t: 'embarked', unitId: e.m.u.id, owner: e.m.u.owner, transportId: e.ship.id, from: e.from, to: { x: e.ship.x, y: e.ship.y }, tick },
+        visibleToUnitAt(b, state, vision0, e.m.u, e.from, players),
       );
     }
     // Зона контроля: вошедший на клетку рядом с противником, держащим ЗК, останавливается.
@@ -557,6 +658,14 @@ function resolveCombat(
         fail('target_destroyed');
         continue;
       }
+      if (a.attacker.carriedBy) {
+        fail('attacker_embarked');
+        continue;
+      }
+      if (a.target.carriedBy) {
+        fail('target_embarked');
+        continue;
+      }
       // Цель ушла из зоны — автоматического преследования нет.
       if (dist(a.attacker, a.target) > rangeOf(b, state, a.attacker)) {
         fail('target_out_of_range');
@@ -617,12 +726,18 @@ function resolveCombat(
         }
       }
     }
+    // Груз гибнет вместе с транспортом.
+    for (const u of state.units) if (u.carriedBy && u.hp > 0 && (byId.get(u.carriedBy)?.hp ?? 0) <= 0) u.hp = 0;
     // Потери ступени.
     for (const u of sortById(state.units)) {
       if (u.hp > 0) continue;
       log.push({ t: 'unit_destroyed', unitId: u.id, owner: u.owner, at: { x: u.x, y: u.y }, unitType: u.type }, visibleToUnitAt(b, state, vision1, u, u, players));
       // Опыт за уничтожение — тем, кто нанёс урон в этой ступени.
-      for (const v of valid) if (v.a.target === u && v.a.attacker.hp > 0) addXp(v.a.attacker, b.units[v.a.attacker.type].xpOnKill);
+      for (const v of valid) {
+        if (v.a.target !== u || v.a.attacker.hp <= 0) continue;
+        addXp(v.a.attacker, b.units[v.a.attacker.type].xpOnKill);
+        if (u.owner !== NEUTRAL) grantMomentum(b, state, v.a.attacker, log);
+      }
       if (u.type === 'commander') {
         const p = playerOf(state, u.owner);
         if (p && p.commander.unitId === u.id) {
@@ -672,7 +787,7 @@ function applyXp(b: Balance, state: GameState, gain: Map<string, number>, log: E
 
 function resolveCapture(b: Balance, state: GameState, log: EventLog, vision: Map<PlayerId, Vision>, players: PlayerId[]): void {
   for (const city of sortById(state.cities)) {
-    const occ = state.units.find(u => u.x === city.x && u.y === city.y);
+    const occ = state.units.find(u => u.x === city.x && u.y === city.y && onMap(u) && !isNaval(b, u.type));
     const watchers = players.filter(p => vision.get(p)!.visible[idx(state.map, city.x, city.y)]);
     const ownerList = city.owner && city.owner !== NEUTRAL ? [city.owner] : [];
     if (occ && occ.owner !== NEUTRAL && occ.owner !== city.owner && isHostile(b, state, occ.owner, city.owner)) {
@@ -686,6 +801,14 @@ function resolveCapture(b: Balance, state: GameState, log: EventLog, vision: Map
         city.productionStock = 0;
         log.push({ t: 'city_captured', cityId: city.id, from, to: occ.owner, at: { x: city.x, y: city.y } }, [...watchers, ...ownerList, occ.owner]);
         grantXp(b, state, occ, b.xp.perCapture, log);
+        if (from && from !== NEUTRAL) grantMomentum(b, state, occ, log);
+        const plunder = traitsOf(b, state, occ.owner).plunderGold;
+        const p = playerOf(state, occ.owner);
+        if (plunder && p) {
+          const gold = (plunder + techs(b, state, occ.owner).plunderBonus) * Math.max(1, city.level);
+          p.gold += gold;
+          log.push({ t: 'plunder', playerId: p.id, cityId: city.id, gold }, [p.id]);
+        }
       } else if (city.contestedBy !== occ.owner) {
         city.contestedBy = occ.owner;
         city.contestedSinceTurn = state.turn;
@@ -728,10 +851,10 @@ export function cityIncome(b: Balance, state: GameState, c: CityState): CityInco
   const tc = techs(b, state, c.owner);
   const spec = c.specialization ? b.specializations[c.specialization]?.effects ?? {} : {};
   const coastal = waterDistance(state.map)[idx(state.map, c.x, c.y)] <= 1;
-  const gold = ((b.cities.goldPerLevel[c.level] ?? 0) + (c.isCapital ? b.cities.capitalBonusGold : 0) + cityBuildingEffect(b, c, 'gold') + tc.goldPerCity + (coastal ? tc.coastalGold : 0)) * (spec.goldMul ?? 1);
+  const gold = ((b.cities.goldPerLevel[c.level] ?? 0) + (c.isCapital ? b.cities.capitalBonusGold : 0) + cityBuildingEffect(b, c, 'gold') + tc.goldPerCity + (coastal ? tc.coastalGold : 0) + worldEffect(b, state, 'gold')) * (spec.goldMul ?? 1);
   const production = ((b.cities.productionPerLevel[c.level] ?? 0) + cityBuildingEffect(b, c, 'production')) * (spec.productionMul ?? 1);
   const knowledge = ((b.cities.knowledgePerLevel[c.level] ?? 0) + cityBuildingEffect(b, c, 'knowledge')) * (spec.knowledgeMul ?? 1);
-  const food = b.cities.baseFood + cityBuildingEffect(b, c, 'food');
+  const food = b.cities.baseFood + cityBuildingEffect(b, c, 'food') + tc.foodPerCity + worldEffect(b, state, 'food');
   // Материалы с месторождений вокруг города.
   let woodTiles = 0, ironTiles = 0, crystalTiles = 0;
   const r = b.cities.materialRadius;
@@ -768,8 +891,19 @@ export function incomeFor(b: Balance, state: GameState, playerId: PlayerId): Inc
     materials.crystal += ci.crystal;
     if (!c.contestedBy && c.specialization) relief += b.specializations[c.specialization]?.effects.upkeepRelief ?? 0;
   }
+  // Обелиски на руинах — источники знаний.
+  const tc = techs(b, state, playerId);
+  for (const o of linkedObelisks(b, state, playerId)) {
+    if (state.map.features[idx(state.map, o.x, o.y)] & Feature.Ruins) knowledge += b.obelisks.ruinsKnowledge + tc.ruinsKnowledge;
+  }
   let upkeep = 0;
   for (const u of state.units) if (u.owner === playerId) upkeep += b.units[u.type].upkeep;
+  // Пепельные орды: каждый город сверх предела удержания стоит золота.
+  const tr = traitsOf(b, state, playerId);
+  if (tr.frontLimit !== undefined && tr.frontPenaltyGold) {
+    const owned = state.cities.filter(c => c.owner === playerId).length;
+    upkeep += Math.max(0, owned - tr.frontLimit - tc.frontLimitBonus) * tr.frontPenaltyGold;
+  }
   return { gold, upkeep: Math.max(0, upkeep - relief), knowledge, production, materials, cities };
 }
 
@@ -826,7 +960,7 @@ function resolveEconomy(b: Balance, state: GameState, log: EventLog): void {
         continue;
       }
       if (head.progress < b.units[head.unitType].cost.production) continue;
-      const spot = spawnSpot(b, state, c);
+      const spot = spawnSpot(b, state, c, isNaval(b, head.unitType));
       if (!spot) {
         log.push({ t: 'production_blocked', cityId: c.id, owner: p.id, reason: 'no_space' }, [p.id]);
         continue;
@@ -860,12 +994,21 @@ function resolveEconomy(b: Balance, state: GameState, log: EventLog): void {
 function resolveSupplyAndHealing(b: Balance, state: GameState, log: EventLog, ctx: TurnCtx): void {
   const grids = new Map<PlayerId, Uint8Array>();
   for (const p of state.players) if (!p.eliminated) grids.set(p.id, computeSupply(b, state, p.id));
+  const fieldHealing = worldHas(b, state, 'fieldHealing') ? worldEffect(b, state, 'fieldHealing') : 1;
   for (const u of sortById(state.units)) {
-    if (u.owner === NEUTRAL) continue;
+    if (u.owner === NEUTRAL || u.carriedBy) continue;
     const grid = grids.get(u.owner);
     if (!grid) continue;
     const inSupply = grid[idx(state.map, u.x, u.y)] === 1;
     const at = { x: u.x, y: u.y };
+    // Всплеск резонанса: лечит отряды в поле обелисков даже после боя.
+    if (ctx.surge.has(u.owner) && u.hp < u.maxHp && inResonance(b, state, u)) {
+      const amount = Math.min(3, u.maxHp - u.hp);
+      u.hp += amount;
+      log.push({ t: 'healed', unitId: u.id, owner: u.owner, amount }, [u.owner]);
+    }
+    // Корабли несут припасы с собой: штрафов снабжения нет, лечатся только в зоне.
+    if (isNaval(b, u.type) && !inSupply) continue;
     if (inSupply) {
       if (u.supplyOut > 0) {
         u.supplyOut = 0;
@@ -888,6 +1031,7 @@ function resolveSupplyAndHealing(b: Balance, state: GameState, log: EventLog, ct
     if (!inSupply || ctx.acted.has(u.id) || u.hp >= u.maxHp) continue;
     let heal = b.healing.inSupply + techs(b, state, u.owner).healBonus + commanderAura(b, state, u.owner, u, 'logistics');
     const city = state.cities.find(c => c.x === u.x && c.y === u.y && c.owner === u.owner);
+    if (!city) heal = Math.floor(heal * fieldHealing);
     if (city) {
       heal += b.healing.inOwnCity;
       if (city.specialization) heal += b.specializations[city.specialization]?.effects.garrisonHeal ?? 0;
@@ -900,9 +1044,86 @@ function resolveSupplyAndHealing(b: Balance, state: GameState, log: EventLog, ct
   }
 }
 
-function spawnSpot(b: Balance, state: GameState, c: { x: number; y: number }): Coord | null {
-  const free = (x: number, y: number) => isLandPassable(b, state.map, x, y) && !state.units.some(u => u.x === x && u.y === y);
-  if (free(c.x, c.y)) return { x: c.x, y: c.y };
+function spawnSpot(b: Balance, state: GameState, c: { x: number; y: number }, naval = false): Coord | null {
+  const free = (x: number, y: number) => isLandPassable(b, state.map, x, y, naval ? { naval: true } : undefined) && !state.units.some(u => onMap(u) && u.x === x && u.y === y);
+  if (!naval && free(c.x, c.y)) return { x: c.x, y: c.y };
   for (const [dx, dy] of DIRS8) if (free(c.x + dx, c.y + dy)) return { x: c.x + dx, y: c.y + dy };
   return null;
 }
+
+// ======================= Этап 5: натиск, выжженная земля, обелиски, руины, события =======================
+
+/** Пепельные орды: уничтожение врага или захват города даёт +1 к движению на следующий ход. */
+function grantMomentum(b: Balance, state: GameState, u: UnitState, log: EventLog): void {
+  if (!traitsOf(b, state, u.owner).momentumMove || u.hp <= 0) return;
+  // Натиск не продлевается цепочкой: отряд, уже действующий с натиском в этот ход, новый не получает.
+  if (u.statuses.some(s => s.id === 'momentum' && s.expiresTurn === state.turn)) return;
+  const had = u.statuses.some(s => s.id === 'momentum' && s.expiresTurn === state.turn + 1);
+  addStatus(u, 'momentum', 'momentum', state.turn + 1);
+  if (!had) log.push({ t: 'momentum', unitId: u.id, owner: u.owner }, [u.owner]);
+}
+
+function applyScorch(b: Balance, state: GameState, u: UnitState, log: EventLog, watchers: PlayerId[]): void {
+  const i = idx(state.map, u.x, u.y);
+  state.map.features[i] &= ~(Feature.Road | Feature.Fort | Feature.ResourceWood);
+  if (state.map.terrain[i] === Terrain.Forest) state.map.terrain[i] = Terrain.Plains;
+  const city = nearestForeignCity(state, u.owner, u, b.scorch.radius);
+  let foodLost = 0;
+  if (city && isHostile(b, state, u.owner, city.owner)) {
+    foodLost = Math.min(city.food, b.scorch.foodLoss);
+    city.food -= foodLost;
+  }
+  const gold = b.scorch.gold + techs(b, state, u.owner).scorchGold;
+  const p = playerOf(state, u.owner);
+  if (p) p.gold += gold;
+  const victims = city?.owner ? [city.owner] : [];
+  log.push({ t: 'scorched', at: { x: u.x, y: u.y }, by: u.owner, cityId: foodLost ? city!.id : null, foodLost, gold }, [...watchers, u.owner, ...victims]);
+}
+
+/** Обелиск разрушается, если на его клетке закончил ход отряд противника. */
+function resolveStructures(b: Balance, state: GameState, log: EventLog, vision: Map<PlayerId, Vision>, players: PlayerId[]): void {
+  const keep = [];
+  for (const s of state.world.structures) {
+    const enemy = sortById(state.units).find(u => u.hp > 0 && onMap(u) && u.x === s.x && u.y === s.y && u.owner !== s.owner && u.owner !== NEUTRAL && isHostile(b, state, u.owner, s.owner));
+    if (!enemy) {
+      keep.push(s);
+      continue;
+    }
+    const watchers = players.filter(p => vision.get(p)!.visible[idx(state.map, s.x, s.y)]);
+    log.push({ t: 'structure_destroyed', structureId: s.id, kind: s.kind, owner: s.owner, at: { x: s.x, y: s.y }, by: enemy.owner }, [...watchers, s.owner, enemy.owner]);
+  }
+  state.world.structures = keep;
+}
+
+/** Первый отряд, закончивший ход на неразграбленных руинах, получает награду. */
+function lootRuins(b: Balance, state: GameState, log: EventLog, vision: Map<PlayerId, Vision>, players: PlayerId[]): void {
+  for (const u of sortById(state.units)) {
+    if (u.hp <= 0 || !onMap(u) || u.owner === NEUTRAL || isNaval(b, u.type)) continue;
+    if (!isLootableRuin(state, u.x, u.y)) continue;
+    const p = playerOf(state, u.owner);
+    if (!p) continue;
+    const r = ruinReward(b, state, u.owner, u.x, u.y);
+    state.world.lootedRuins.push(idx(state.map, u.x, u.y));
+    if (r.kind === 'gold') p.gold += r.amount;
+    else if (r.kind === 'knowledge') p.researchProgress += r.amount;
+    else if (r.kind === 'xp') grantXp(b, state, u, r.amount, log);
+    else p.materials[r.kind] += r.amount;
+    const watchers = players.filter(pl => vision.get(pl)!.visible[idx(state.map, u.x, u.y)]);
+    log.push({ t: 'ruins_looted', at: { x: u.x, y: u.y }, playerId: p.id, unitId: u.id, reward: r.kind, amount: r.amount }, [...watchers, p.id]);
+  }
+}
+
+/** Мировые события: окончание действующих и объявление нового на следующий ход. Видны всем. */
+function advanceWorldEvents(b: Balance, state: GameState, log: EventLog, players: PlayerId[]): void {
+  const next = state.turn + 1;
+  const ended = state.world.events.filter(e => e.endTurn < next);
+  for (const e of ended) log.push({ t: 'world_event', eventId: e.id, phase: 'end', endTurn: e.endTurn }, players);
+  state.world.events = state.world.events.filter(e => e.endTurn >= next);
+  const id = rollWorldEvent(b, state.map.seed, next);
+  if (!id || state.world.events.some(e => e.id === id)) return;
+  const ev = { id, startTurn: next, endTurn: next + b.worldEvents.duration - 1 };
+  state.world.events.push(ev);
+  if (b.worldEvents.list[id].effects.restoreRuins) state.world.lootedRuins = [];
+  log.push({ t: 'world_event', eventId: id, phase: 'start', endTurn: ev.endTurn }, players);
+}
+
