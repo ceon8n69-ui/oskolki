@@ -51,3 +51,10 @@
 Снижение движения отключает дымовое движение, шаги, покачивание, реакцию от удара; строительство сразу показывает завершённую форму. Событийная смена состояний остаётся видимой. Начальный масштаб зависит от ширины экрана, управление перетаскиванием поддерживает pointer events. Pinch-zoom, реальные команды, стриминг большой карты и интеграция с TimelinePlayer остаются задачей игрового клиента.
 
 Это всё ещё процедурный геометрический прототип. Он не достигает художественной детализации исходного референса; потребуются дальнейшая работа с формами, материалами и авторскими ассетами.
+
+
+## Raster atlas pass
+
+kingdom-atlas.png — 1254×1254 RGBA, six generated sprites: castle, conifer cluster, rocks, guard, archer, bridge. Generated with built-in image generation; prompt direction: consistent isometric stylized miniatures, ivory stone/cobalt roofs, upper-left lighting, transparent background, six separate objects. sprite-atlas.js defines explicit source rectangles, scale and ground anchors; preview now consumes the atlas. Original art is preserved unmodified.
+
+Important: this is a candidate art pack, not final production animation. Only one direction and one pose per unit exist. Movement and hits transform the whole sprite; no walk-cycle frames or independent limbs yet. Both teams currently share blue sprite artwork; ownership is distinguished by HP markers and a separate city flag. Other faction textures, true animated flags, staged construction art, full terrain art, mobile-device performance checks and live-client integration are outstanding. Construction preview uses a percentage over the completed sprite. Do not ship this as complete faction visuals. Bridge is mirrored at draw time to align with the crossing.

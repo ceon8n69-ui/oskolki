@@ -4,14 +4,14 @@ export const clamp = n=>Math.max(0,Math.min(1,n));
 export function project(x,y,z,c){return {x:c.width/2+(x-y-c.x+c.y)*c.size,y:c.height*.46+(x+y-c.x-c.y)*c.size*.5-z*c.size}}
 export function unproject(x,y,c){const a=(x-c.width/2)/c.size,b=(y-c.height*.46)/(c.size*.5);return{x:c.x+(a+b)/2,y:c.y+(b-a)/2}}
 function tone(hex,f){const n=parseInt(hex.slice(1),16);return '#'+[n>>16,(n>>8)&255,n&255].map(v=>Math.round(Math.min(255,v*f)).toString(16).padStart(2,'0')).join('')}
-export function makePainter(ctx,c){
+export function makePainter(ctx,c,atlas=null){
  function polygon(points,color,stroke){ctx.beginPath();points.forEach(([x,y,z=0],i)=>{let p=project(x,y,z,c);i?ctx.lineTo(p.x,p.y):ctx.moveTo(p.x,p.y)});ctx.closePath();ctx.fillStyle=color;ctx.fill();if(stroke){ctx.strokeStyle=stroke;ctx.lineWidth=1;ctx.stroke()}}
  function box(x,y,z,w,d,h,col){polygon([[x,y+d,z],[x+w,y+d,z],[x+w,y+d,z+h],[x,y+d,z+h]],tone(col,.88));polygon([[x+w,y,z],[x+w,y+d,z],[x+w,y+d,z+h],[x+w,y,z+h]],tone(col,.7));polygon([[x,y,z+h],[x+w,y,z+h],[x+w,y+d,z+h],[x,y+d,z+h]],col)}
  function pyramid(x,y,z,w,h,col){polygon([[x-w,y-w,z],[x+w,y-w,z],[x,y,z+h]],tone(col,.94));polygon([[x+w,y-w,z],[x+w,y+w,z],[x,y,z+h]],tone(col,.72));polygon([[x+w,y+w,z],[x-w,y+w,z],[x,y,z+h]],col)}
  function line(a,b,col,width=2){let p=project(...a,c),q=project(...b,c);ctx.beginPath();ctx.moveTo(p.x,p.y);ctx.lineTo(q.x,q.y);ctx.strokeStyle=col;ctx.lineWidth=width;ctx.lineCap='round';ctx.stroke()}
  function ellipse(x,y,z,rx,ry,col){let p=project(x,y,z,c);ctx.beginPath();ctx.ellipse(p.x,p.y,rx*c.size,ry*c.size,0,0,Math.PI*2);ctx.fillStyle=col;ctx.fill()}
  function label(x,y,z,text,col='#20364e'){let p=project(x,y,z,c);ctx.font=`600 ${Math.max(10,Math.min(14,c.size*.18))}px system-ui`;ctx.textAlign='center';ctx.textBaseline='middle';ctx.lineWidth=4;ctx.strokeStyle='#f4eddd';ctx.strokeText(text,p.x,p.y);ctx.fillStyle=col;ctx.fillText(text,p.x,p.y)}
- return{polygon,box,pyramid,line,ellipse,label};
+ function sprite(kind,x,y,opts={}){return atlas?atlas(ctx,kind,project(x,y,0,c),c.size,opts):false}return{polygon,box,pyramid,line,ellipse,label,sprite};
 }
 export function drawTile(p,x,y,type,variation=0,time=0){let col=type==='water'?PALETTE.water:type==='road'?'#c9b98a':variation>.5?'#a8bf72':'#b2c77d';p.box(x-.5,y-.5,-.2,1,1,.2,col);if(type==='water'){for(let i=0;i<2;i++){let f=(time*.00015+i*.4+x*.07)%1;p.line([x-.3+f*.15,y-.2+i*.4,.015],[x+.06+f*.15,y-.2+i*.4,.015],'#a5e2df',1)}}else if(type==='road'){for(let i=0;i<3;i++)p.box(x-.32+i*.22,y-.14,.005,.17,.24,.015,'#ded0a6')}}
 export function drawBank(p,x,y){
@@ -19,10 +19,11 @@ export function drawBank(p,x,y){
 }
 export function drawShrub(p,x,y){p.ellipse(x,y,.02,.13,.045,'#41634333');p.pyramid(x,y,.025,.12,.17,'#78984c');p.pyramid(x+.1,y+.04,.02,.08,.12,'#91aa56')}
 export function drawSmoke(p,x,y,time=0,reducedMotion=false){for(let i=0;i<3;i++){let t=reducedMotion?i/3:(time/2400+i/3)%1;p.ellipse(x+t*.16,y, .75+t*.7,.04+t*.09,.035+t*.07,`rgba(236,230,209,${(1-t)*.35})`)}}
-export function drawTree(p,x,y,size=1,variant=0){p.ellipse(x+.15,y+.12,.015,.38*size,.12*size,'#254c3a28');p.box(x-.045,y-.045,0,.09,.09,.28*size,'#795637');if(variant){for(let [dx,dy,z]of [[0,0,.35],[-.12,.05,.48],[.1,-.05,.63]])p.pyramid(x+dx,y+dy,z*size,.28*size,.35*size,'#6e9b45')}else for(let i=0;i<3;i++)p.pyramid(x,y,(.18+i*.19)*size,(.31-i*.065)*size,.51*size,i===2?'#639650':'#3d7951')}
-export function drawMountain(p,x,y,size=1){p.pyramid(x,y,.02,.49,size*1.3,'#a8aaa1');p.pyramid(x-.04,y+.03,size*.82,.18,size*.43,'#d7d5c4');p.pyramid(x+.24,y+.24,0,.23,size*.65,'#8d9891')}
-export function drawBridge(p,x,y){for(let i=0;i<8;i++)p.box(x-.5+i*.125,y-.32,.045,.115,.64,.08,i%2?'#bc9564':'#caab77');for(let dy of [-.3,.3]){for(let dx of [-.45,0,.45])p.box(x+dx,y+dy,.08,.035,.035,.3,'#866441');p.line([x-.48,y+dy,.34],[x+.48,y+dy,.34],'#a57e4d',3)}}
+export function drawTree(p,x,y,size=1,variant=0){if(p.sprite?.('tree',x,y))return;p.ellipse(x+.15,y+.12,.015,.38*size,.12*size,'#254c3a28');p.box(x-.045,y-.045,0,.09,.09,.28*size,'#795637');if(variant){for(let [dx,dy,z]of [[0,0,.35],[-.12,.05,.48],[.1,-.05,.63]])p.pyramid(x+dx,y+dy,z*size,.28*size,.35*size,'#6e9b45')}else for(let i=0;i<3;i++)p.pyramid(x,y,(.18+i*.19)*size,(.31-i*.065)*size,.51*size,i===2?'#639650':'#3d7951')}
+export function drawMountain(p,x,y,size=1){if(p.sprite?.('mountain',x,y))return;p.pyramid(x,y,.02,.49,size*1.3,'#a8aaa1');p.pyramid(x-.04,y+.03,size*.82,.18,size*.43,'#d7d5c4');p.pyramid(x+.24,y+.24,0,.23,size*.65,'#8d9891')}
+export function drawBridge(p,x,y){if(p.sprite?.('bridge',x,y))return;for(let i=0;i<8;i++)p.box(x-.5+i*.125,y-.32,.045,.115,.64,.08,i%2?'#bc9564':'#caab77');for(let dy of [-.3,.3]){for(let dx of [-.45,0,.45])p.box(x+dx,y+dy,.08,.035,.035,.3,'#866441');p.line([x-.48,y+dy,.34],[x+.48,y+dy,.34],'#a57e4d',3)}}
 export function drawCastle(p,x,y,{color=PALETTE.blue,time=0,progress=1,reducedMotion=false}={}){
+ if(p.sprite?.('castle',x,y)){p.line([x+.5,y,0],[x+.5,y,1.1],'#9b7848',2);p.polygon([[x+.5,y,1.1],[x+.8,y,1.05],[x+.8,y,.83],[x+.5,y,.88]],color);if(progress<1)p.label(x,y,-.2,Math.round(progress*100)+'%');return;}
  // Build stages are purely visual, driven by confirmed construction progress.
  p.box(x-.46,y-.46,0,.92,.92,.1,'#b5ac8e');if(progress<.2)return;
  p.box(x-.3,y-.3,.1,.6,.6,.47,PALETTE.stone);p.pyramid(x,y,.57,.39,.33,color);
@@ -39,6 +40,7 @@ export function drawUnit(p,x,y,{type='shieldbearer',color=PALETTE.blue,time=0,st
  const t=reducedMotion?0:time/130,walk=state==='walk'?Math.sin(t)*.09:0,attack=state==='attack'&&!reducedMotion?Math.sin(clamp(progress)*Math.PI)*.2:0;
  if(state==='defend')p.ellipse(x,y,.015,.36,.18,'#7ad4e340');
  if(selected)p.polygon([[x-.45,y-.45,.02],[x+.45,y-.45,.02],[x+.45,y+.45,.02],[x-.45,y+.45,.02]],'#efc35435','#ffe19b');
+ if(p.sprite?.(type==='archer'||type==='ranger'?'archer':'guard',x,y,{time,state,progress,reducedMotion})){for(let i=0;i<5;i++)p.ellipse(x-.17+i*.085,y,1.12,.028,.025,i<Math.ceil(clamp(hp)*5)?color:'#d4d2bf');return;}
  p.ellipse(x+.06,y+.08,.02,.24,.09,'#1d38483b');if(state==='defeat'){p.box(x-.22,y-.08,.02,.4,.15,.12,color);return}
  if(state==='hit'&&!reducedMotion)x-=Math.sin(clamp(progress)*Math.PI)*.08;
  const z=reducedMotion?0:state==='walk'?Math.abs(Math.sin(t))*.025:Math.sin(time/900)*.006;x+=attack*direction;
