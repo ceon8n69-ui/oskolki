@@ -6,6 +6,7 @@ import { playerView, eventsFor } from '../../src/engine/view.ts';
 import { validateOrder } from '../../src/engine/validate.ts';
 import { previewAttack } from '../../src/engine/preview.ts';
 import { Terrain } from '../../src/shared/types.ts';
+import { newCity } from '../../src/engine/factory.ts';
 import { attack, b, flatState, hold, move, so, unit } from '../helpers.ts';
 
 test('два отряда претендуют на одну клетку: побеждает инициатива, проигравший остаётся', () => {
@@ -259,6 +260,6 @@ test('отрицательный баланс не удаляет отряды',
   assert.ok(r.state.players[0].gold < 0);
   assert.equal(r.state.units.filter(u => u.owner === 'A').length, 6);
   const v = computeVision(b, r.state, 'A');
-  r.state.cities.push({ id: 'cc', name: 'x', owner: 'A', x: 8, y: 8, level: 1, isCapital: false, contestedBy: null, contestedSinceTurn: null, productionStock: 0, queue: [] });
+  r.state.cities.push(newCity({ id: 'cc', name: 'x', owner: 'A', x: 8, y: 8 }));
   assert.deepEqual(validateOrder(b, r.state, 'A', { kind: 'recruit', cityId: 'cc', unitType: 'infantry' }, v), { ok: false, reason: 'deficit' });
 });

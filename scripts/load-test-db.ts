@@ -2,6 +2,7 @@
 // кампания 256×256, 32 игрока (боты), ~2 000 отрядов, расчёт и запись нескольких ходов.
 // npm run load-test -- --turns 5 --units 2000   (DATABASE_URL — отдельная БД, данные не удаляются)
 import { BALANCE } from '../src/shared/balance.ts';
+import { newUnit } from '../src/engine/factory.ts';
 import { isLandPassable } from '../src/engine/grid.ts';
 import { createRng } from '../src/engine/rng.ts';
 import { computeVision } from '../src/engine/vision.ts';
@@ -50,7 +51,7 @@ await withTx(db, async tx => {
     if (!isLandPassable(BALANCE, st.map, x, y) || taken.has(`${x},${y}`)) continue;
     taken.add(`${x},${y}`);
     const type = ['infantry', 'scout', 'infantry', 'infantry'][Math.floor(rng() * 4)];
-    st.units.push({ id: `u${st.nextIds.unit++}`, owner: p.id, type, x, y, hp: BALANCE.units[type].hp, xp: 0, rank: 0, statuses: [], countersUsed: 0, createdTurn: 1, route: null });
+    st.units.push(newUnit(BALANCE, st, { id: `u${st.nextIds.unit++}`, owner: p.id, type, x, y, createdTurn: 1 }));
   }
   await saveState(tx, st);
   log(`игроков ${st.players.length}, отрядов ${st.units.length}`);

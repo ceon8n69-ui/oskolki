@@ -11,6 +11,7 @@ import { PROTOCOL_VERSION } from '../shared/protocol.ts';
 import type { ServerMessage } from '../shared/protocol.ts';
 import { moveOptions, previewAttack } from '../engine/preview.ts';
 import { computeVision } from '../engine/vision.ts';
+import { computeSupply } from '../engine/supply.ts';
 import { chunkView, minimapView } from '../engine/view.ts';
 import { asciiMap, generateWorld } from '../worldgen/generate.ts';
 import type { TelegramBot } from '../bot/telegram.ts';
@@ -83,14 +84,21 @@ export async function buildApp(deps: { cfg: ServerConfig; db: Db; game: GameServ
   // ---------- партии ----------
   app.get('/api/matches', async req => ({ matches: await game.listMatches(auth(req)) }));
 
-  app.post('/api/matches', async (req: FastifyRequest<{ Body: { preset?: string } }>) => {
+  app.post('/api/matches', async (req: FastifyRequest<{ Body: { preset?: string; faction?: string } }>) => {
     const uid = auth(req);
-    return game.createMatch(uid, String(req.body?.preset ?? 'quick'), await displayName(uid));
+    return game.createMatch(uid, String(req.body?.preset ?? 'quick'), await displayName(uid), String(req.body?.faction ?? 'union'));
   });
 
-  app.post('/api/matches/join', async (req: FastifyRequest<{ Body: { inviteCode?: string } }>) => {
+  app.post('/api/matches/:id/faction', async (req: FastifyRequest<{ Params: { id: string }; Body: { faction?: string } }>) =>
+    game.setFaction(req.params.id, auth(req), String(req.body?.faction ?? '')),
+  );
+
+  /** Справочник правил для интерфейса: юниты, технологии, постройки, народы, эффекты (из конфигурации баланса). */
+  app.get('/api/rules', async () => b);
+
+  app.post('/api/matches/join', async (req: FastifyRequest<{ Body: { inviteCode?: string; faction?: string } }>) => {
     const uid = auth(req);
-    return game.joinByInvite(uid, String(req.body?.inviteCode ?? ''), await displayName(uid));
+    return game.joinByInvite(uid, String(req.body?.inviteCode ?? ''), await displayName(uid), String(req.body?.faction ?? 'union'));
   });
 
   app.get('/api/matches/:id', async (req: FastifyRequest<{ Params: { id: string } }>) => {
@@ -113,12 +121,13 @@ export async function buildApp(deps: { cfg: ServerConfig; db: Db; game: GameServ
     const pid = await game.playerIdFor(req.params.id, uid);
     const state = await loadStateCached(db, req.params.id);
     const v = computeVision(b, state, pid);
+    const supply = computeSupply(b, state, pid);
     const maxCx = Math.ceil(state.map.width / state.map.chunkSize);
     const maxCy = Math.ceil(state.map.height / state.map.chunkSize);
     const list = String(req.query.list ?? '').split(';').filter(Boolean).slice(0, 64).map(s => s.split(',').map(Number));
     const chunks = list
       .filter(([cx, cy]) => Number.isInteger(cx) && Number.isInteger(cy) && cx >= 0 && cy >= 0 && cx < maxCx && cy < maxCy)
-      .map(([cx, cy]) => chunkView(state, pid, cx, cy, v));
+      .map(([cx, cy]) => chunkView(state, pid, cx, cy, v, supply));
     return { turn: state.turn, chunks };
   });
 
@@ -148,7 +157,8 @@ export async function buildApp(deps: { cfg: ServerConfig; db: Db; game: GameServ
   app.get('/api/matches/:id/preview/moves', async (req: FastifyRequest<{ Params: { id: string }; Querystring: { unitId?: string } }>) => {
     const pid = await game.playerIdFor(req.params.id, auth(req));
     const state = await loadStateCached(db, req.params.id);
-    return { tiles: moveOptions(b, state, pid, String(req.query.unitId ?? ''), computeVision(b, state, pid)) };
+    const orders = (await game.activeOrders(db, req.params.id, state.turn, pid)).map(o => o.order);
+    return { tiles: moveOptions(b, state, pid, String(req.query.unitId ?? ''), computeVision(b, state, pid), orders) };
   });
 
   app.post('/api/matches/:id/preview/attack', async (req: FastifyRequest<{ Params: { id: string }; Body: any }>) => {
@@ -157,7 +167,8 @@ export async function buildApp(deps: { cfg: ServerConfig; db: Db; game: GameServ
     const body = req.body as any;
     const o = sanitizeOrder({ kind: "unit", mode: "attack", unitId: body?.unitId, path: body?.path, targetUnitId: body?.targetUnitId });
     if (o.kind !== 'unit') throw new GameError('bad_order');
-    return previewAttack(b, state, pid, o.unitId, o.path, o.targetUnitId ?? '', computeVision(b, state, pid));
+    const orders = (await game.activeOrders(db, req.params.id, state.turn, pid)).map(x => x.order);
+    return previewAttack(b, state, pid, o.unitId, o.path, o.targetUnitId ?? '', computeVision(b, state, pid), orders);
   });
 
   // ---------- администрирование ----------

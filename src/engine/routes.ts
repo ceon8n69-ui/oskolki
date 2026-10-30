@@ -3,6 +3,7 @@
 import type { Balance } from '../shared/balance.ts';
 import type { Coord, GameState, PlayerId, TurnEvent, UnitOrder, UnitState } from '../shared/types.ts';
 import { dist, isAdjacent, landMoveCost } from './grid.ts';
+import { moveOf, moveProfile } from './stats.ts';
 import type { Vision } from './vision.ts';
 import { canSeeUnit } from './vision.ts';
 
@@ -11,13 +12,15 @@ interface Log {
 }
 
 /** Префикс пути, который укладывается в бюджет движения отряда за ход. */
-export function prefixWithinBudget(b: Balance, state: GameState, u: UnitState, path: Coord[]): Coord[] {
+export function prefixWithinBudget(b: Balance, state: GameState, u: UnitState, path: Coord[], forcedMarch?: Set<string>): Coord[] {
   const out: Coord[] = [];
   let spent = 0;
   let cur: Coord = u;
+  const profile = moveProfile(b, state, u);
+  const budget = moveOf(b, state, u, forcedMarch);
   for (const s of path) {
-    const c = landMoveCost(b, state.map, cur, s);
-    if (c === null || !isAdjacent(cur, s) || spent + c > b.units[u.type].move + 1e-9) break;
+    const c = landMoveCost(b, state.map, cur, s, profile);
+    if (c === null || !isAdjacent(cur, s) || spent + c > budget + 1e-9) break;
     spent += c;
     out.push(s);
     cur = s;
@@ -36,12 +39,12 @@ function threatNear(b: Balance, state: GameState, u: UnitState, v: Vision): bool
  * — любой другой явный приказ отменяет сохранённый маршрут;
  * — отряд без приказа с маршрутом продолжает движение (или останавливается при угрозе).
  */
-export function planRoutes(b: Balance, state: GameState, unitOrders: Map<string, UnitOrder>, log: Log, vision0: Map<PlayerId, Vision>): void {
+export function planRoutes(b: Balance, state: GameState, unitOrders: Map<string, UnitOrder>, log: Log, vision0: Map<PlayerId, Vision>, forcedMarch?: Set<string>): void {
   for (const u of state.units) {
     const o = unitOrders.get(u.id);
     if (o) {
       if (o.mode === 'move' && o.longRoute) {
-        const now = prefixWithinBudget(b, state, u, o.path);
+        const now = prefixWithinBudget(b, state, u, o.path, forcedMarch);
         const rest = o.path.slice(now.length);
         u.route = rest.length ? { path: rest, stopOnThreat: o.stopOnThreat !== false, orderedTurn: state.turn } : null;
         unitOrders.set(u.id, { ...o, path: now });
@@ -58,7 +61,7 @@ export function planRoutes(b: Balance, state: GameState, unitOrders: Map<string,
       log.push({ t: 'route_paused', unitId: u.id, owner: u.owner, at: { x: u.x, y: u.y }, reason: 'threat' }, [u.owner]);
       continue;
     }
-    const now = prefixWithinBudget(b, state, u, u.route.path);
+    const now = prefixWithinBudget(b, state, u, u.route.path, forcedMarch);
     if (!now.length) {
       u.route = null;
       log.push({ t: 'route_paused', unitId: u.id, owner: u.owner, at: { x: u.x, y: u.y }, reason: 'invalid' }, [u.owner]);

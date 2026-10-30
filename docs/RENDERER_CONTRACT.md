@@ -43,6 +43,18 @@ client.on('turnResolved', ({ events, before, after }) => ...); // новый х�
 - `client.minimap()` — `terrain` (Uint8Array, 255 — неизвестно), `cities`, `units` для мини-карты; обновлять после каждого хода.
 - Новые шаги шкалы: `build_start`, `road`, `route_paused`.
 
+## Этап 3: народы, отряды, эффекты, командир
+
+- Отряды (`unit.type`): разведчик, пехотинец, щитоносец, копейщик, лучник, всадник, катапульта, инженер, командир и по два уникальных на народ — полный список с классами в docs/RULES.md и `client.rules()`. Каждому нужен свой силуэт; уникальным — в стиле народа.
+- Народ игрока — `view.players[].faction`; архитектура городов и палитра зависят от народа.
+- `unit.statuses[].id` и `modifiers[].id` прогноза → `rules.effects[id].icon` (значок) и `.name`. Значки: shield, cover, formation, suppress, zoc, height, ambush, push, supply_low, supply_none, fort, banner, commander, siege, wave, dry.
+- `features` бит 128 — укрепление (форт) на клетке.
+- Город: `buildings` (свои — все, чужие — только стены), `specialization` (fortress / trade / industrial / science) и `level` меняют внешний вид.
+- Слой снабжения: `chunk.supply` (1 — своя зона); включается отдельной кнопкой.
+- Повышение ранга: `unit.pendingPerks > 0` — показать знак и предложить выбор (`client.promote`).
+- Командир: `view.me.commander` (очки, перезарядки, направления, `pendingChoices`), способности — `client.commanderAbility`, направление — `client.commanderDirection`. «Разведывательный импульс» требует выбора клетки.
+- Новые шаги шкалы: `zoc_stop`, `suppressed`, `knockback` (сдвиг цели `from → to`), `fort`, `forest` (клетка меняет рельеф на лес), `commander_ability`, `commander_fallen`, `commander_respawned`, `healed`, `city_grew`, `building`, `supply_warning`.
+
 ## Предпросмотр (для подсветки)
 
 - `client.previewMoves(unitId)` → клетки, куда можно дойти в этот ход, со стоимостью.

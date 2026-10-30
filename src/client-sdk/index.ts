@@ -1,7 +1,7 @@
 // Клиентский SDK: сеть, состояние, приказы, воспроизведение результатов хода.
 // Не содержит отрисовки. Любой рендерер (2D-отладочный, Three.js) работает через этот модуль.
 import type {
-  AttackPreview, ChunkView, MatchInfo, OrderRecord, ServerMessage, StateResponse, SubmitOrderResponse,
+  AttackPreview, ChunkView, MatchInfo, OrderRecord, Reserved, ServerMessage, StateResponse, SubmitOrderResponse,
 } from '../shared/protocol.ts';
 import type { Coord, Order, StoredEvent } from '../shared/types.ts';
 import { orderSubjectKey } from '../shared/types.ts';
@@ -83,11 +83,18 @@ export class OskolkiClient {
   listMatches() {
     return this.request<{ matches: MatchInfo[] }>('GET', '/api/matches').then(r => r.matches);
   }
-  createMatch(preset: 'quick' | 'async' | 'vsbot' | 'campaign') {
-    return this.request<MatchInfo>('POST', '/api/matches', { preset });
+  createMatch(preset: 'quick' | 'async' | 'vsbot' | 'campaign', faction = 'union') {
+    return this.request<MatchInfo>('POST', '/api/matches', { preset, faction });
   }
-  joinMatch(inviteCode: string) {
-    return this.request<MatchInfo>('POST', '/api/matches/join', { inviteCode });
+  setFaction(matchId: string, faction: string) {
+    return this.request<MatchInfo>('POST', `/api/matches/${matchId}/faction`, { faction });
+  }
+  /** Справочник правил (баланс): юниты, технологии, постройки, народы, эффекты. */
+  rules() {
+    return this.request<Record<string, any>>('GET', '/api/rules');
+  }
+  joinMatch(inviteCode: string, faction = 'union') {
+    return this.request<MatchInfo>('POST', '/api/matches/join', { inviteCode, faction });
   }
   startMatch(matchId: string) {
     return this.request<MatchInfo>('POST', `/api/matches/${matchId}/start`);
@@ -154,7 +161,7 @@ export class OskolkiClient {
     for (let attempt = 0; attempt <= (opts.retries ?? 3); attempt++) {
       try {
         const r = await this.request<SubmitOrderResponse>('POST', `/api/matches/${this.matchId}/orders`, body);
-        if (r.ok && r.order) this.applyLocalOrder(r.order, r.reserved?.gold);
+        if (r.ok && r.order) this.applyLocalOrder(r.order, r.reserved);
         return r;
       } catch (e) {
         lastErr = e;
@@ -165,10 +172,10 @@ export class OskolkiClient {
     throw lastErr;
   }
 
-  private applyLocalOrder(rec: OrderRecord, reservedGold?: number): void {
+  private applyLocalOrder(rec: OrderRecord, reserved?: Reserved): void {
     if (!this.state) return;
     this.state.orders = [...this.state.orders.filter(o => o.subject !== rec.subject), rec];
-    if (reservedGold !== undefined) this.state.reserved.gold = reservedGold;
+    if (reserved) this.state.reserved = reserved;
     const me = this.state.match.players.find(p => p.id === this.state!.view.me.id);
     if (me) me.ready = false;
     this.emit('state', this.state);
@@ -183,6 +190,28 @@ export class OskolkiClient {
   }
   buildRoad(unitId: string) {
     return this.submitOrder({ kind: 'unit', unitId, mode: 'build', build: 'road', path: [] });
+  }
+  build(unitId: string, build: 'road' | 'fort' | 'forest') {
+    return this.submitOrder({ kind: 'unit', unitId, mode: 'build', build, path: [] });
+  }
+  /** Атака с отталкиванием (щитоносцы). */
+  shieldBash(unitId: string, targetUnitId: string, path: Coord[] = []) {
+    return this.submitOrder({ kind: 'unit', unitId, mode: 'attack', path, targetUnitId, ability: 'knockback' });
+  }
+  construct(cityId: string, building: string) {
+    return this.submitOrder({ kind: 'construct', cityId, building });
+  }
+  specialize(cityId: string, specialization: string) {
+    return this.submitOrder({ kind: 'specialize', cityId, specialization });
+  }
+  promote(unitId: string, perk: string) {
+    return this.submitOrder({ kind: 'promote', unitId, perk });
+  }
+  commanderAbility(ability: string, target?: Coord) {
+    return this.submitOrder({ kind: 'commander', action: 'ability', ability, ...(target ? { target } : {}) });
+  }
+  commanderDirection(direction: string) {
+    return this.submitOrder({ kind: 'commander', action: 'direction', direction });
   }
   /** Мини-карта: исследованная местность (255 — неизвестно), города, видимые отряды. */
   async minimap() {

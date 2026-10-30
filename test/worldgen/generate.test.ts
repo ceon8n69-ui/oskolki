@@ -30,7 +30,8 @@ test('начальное состояние: у каждого игрока ст
   });
   for (const p of ['p1', 'p2']) {
     assert.equal(state.cities.filter(c => c.owner === p && c.isCapital).length, 1);
-    assert.equal(state.units.filter(u => u.owner === p).length, BALANCE.factions.union.startUnits.length);
+    assert.equal(state.units.filter(u => u.owner === p).length, BALANCE.factions.union.startUnits.length + 1); // + командир
+    assert.ok(state.units.find(u => u.id === state.players.find(x => x.id === p)!.commander.unitId)?.type === 'commander');
   }
   const v = playerView(BALANCE, state, 'p1');
   assert.ok(!v.units.some(u => u.owner === 'p2'));

@@ -192,14 +192,18 @@ export async function loadState(q: Q, matchId: string): Promise<GameState> {
     id: r.id, name: r.name, faction: r.faction, color: r.color, gold: r.gold, knowledge: r.knowledge,
     researched: rs.rows.filter(x => x.player_id === r.id).map(x => x.tech_id),
     researchQueue: r.research_queue, researchProgress: r.research_progress, isBot: r.is_bot, eliminated: r.eliminated,
+    materials: r.materials ?? { wood: 0, iron: 0, crystal: 0 },
+    commander: r.commander ?? { unitId: null, points: 0, cooldowns: {}, directions: {}, pendingChoices: 0, respawnTurn: null },
   }));
   const units: UnitState[] = us.rows.map(r => ({
     id: r.id, owner: r.owner, type: r.type, x: r.x, y: r.y, hp: r.hp, xp: r.xp, rank: r.rank, statuses: r.statuses, countersUsed: 0, createdTurn: r.created_turn, route: r.route ?? null,
+    maxHp: r.max_hp ?? r.hp, perks: r.perks ?? [], pendingPerks: r.pending_perks ?? 0, supplyOut: r.supply_out ?? 0,
   }));
   // Сортировка по числовой части id: порядок не влияет на расчёт, но упрощает чтение.
   const cities: CityState[] = cs.rows.map(r => ({
     id: r.id, name: r.name, owner: r.owner, x: r.x, y: r.y, level: r.level, isCapital: r.is_capital,
     contestedBy: r.contested_by, contestedSinceTurn: r.contested_since_turn, productionStock: r.production_stock, queue: r.queue,
+    buildings: r.buildings ?? [], food: r.food ?? 0, specialization: r.specialization ?? null,
   }));
   const explored: Record<string, Uint8Array> = {};
   const intel: Record<string, PlayerIntel> = {};
@@ -218,8 +222,8 @@ export async function saveState(tx: Tx, state: GameState): Promise<void> {
   const id = state.matchId;
   for (const p of state.players) {
     await tx.query(
-      'UPDATE players SET gold=$3, knowledge=$4, research_queue=$5, research_progress=$6, eliminated=$7 WHERE match_id=$1 AND id=$2',
-      [id, p.id, p.gold, p.knowledge, p.researchQueue, p.researchProgress, p.eliminated],
+      'UPDATE players SET gold=$3, knowledge=$4, research_queue=$5, research_progress=$6, eliminated=$7, materials=$8, commander=$9, faction=$10 WHERE match_id=$1 AND id=$2',
+      [id, p.id, p.gold, p.knowledge, p.researchQueue, p.researchProgress, p.eliminated, JSON.stringify(p.materials), JSON.stringify(p.commander), p.faction],
     );
     if (p.researched.length) {
       await tx.query(
@@ -232,19 +236,24 @@ export async function saveState(tx: Tx, state: GameState): Promise<void> {
   if (state.units.length) {
     const u = state.units;
     await tx.query(
-      `INSERT INTO units (match_id, id, owner, type, x, y, hp, xp, rank, statuses, created_turn, route)
-       SELECT $1, * FROM unnest($2::text[], $3::text[], $4::text[], $5::int[], $6::int[], $7::int[], $8::int[], $9::int[], $10::jsonb[], $11::int[], $12::jsonb[])`,
-      [id, u.map(x => x.id), u.map(x => x.owner), u.map(x => x.type), u.map(x => x.x), u.map(x => x.y), u.map(x => x.hp), u.map(x => x.xp), u.map(x => x.rank), u.map(x => JSON.stringify(x.statuses)), u.map(x => x.createdTurn), u.map(x => (x.route ? JSON.stringify(x.route) : null))],
+      `INSERT INTO units (match_id, id, owner, type, x, y, hp, xp, rank, statuses, created_turn, route, max_hp, perks, pending_perks, supply_out)
+       SELECT $1, u.id, u.owner, u.type, u.x, u.y, u.hp, u.xp, u.rank, u.statuses, u.created_turn, u.route, u.max_hp,
+              ARRAY(SELECT jsonb_array_elements_text(u.perks)), u.pending_perks, u.supply_out
+       FROM unnest($2::text[], $3::text[], $4::text[], $5::int[], $6::int[], $7::int[], $8::int[], $9::int[], $10::jsonb[], $11::int[], $12::jsonb[], $13::int[], $14::jsonb[], $15::int[], $16::int[])
+         AS u(id, owner, type, x, y, hp, xp, rank, statuses, created_turn, route, max_hp, perks, pending_perks, supply_out)`,
+      [id, u.map(x => x.id), u.map(x => x.owner), u.map(x => x.type), u.map(x => x.x), u.map(x => x.y), u.map(x => x.hp), u.map(x => x.xp), u.map(x => x.rank), u.map(x => JSON.stringify(x.statuses)), u.map(x => x.createdTurn), u.map(x => (x.route ? JSON.stringify(x.route) : null)),
+        u.map(x => x.maxHp), u.map(x => JSON.stringify(x.perks)), u.map(x => x.pendingPerks), u.map(x => x.supplyOut)],
     );
   }
   for (const c of state.cities) {
     await tx.query(
-      `INSERT INTO cities (match_id, id, name, owner, x, y, level, is_capital, contested_by, contested_since_turn, production_stock, queue)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)
+      `INSERT INTO cities (match_id, id, name, owner, x, y, level, is_capital, contested_by, contested_since_turn, production_stock, queue, buildings, food, specialization)
+       VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15)
        ON CONFLICT (match_id, id) DO UPDATE SET owner=EXCLUDED.owner, level=EXCLUDED.level, is_capital=EXCLUDED.is_capital,
          contested_by=EXCLUDED.contested_by, contested_since_turn=EXCLUDED.contested_since_turn,
-         production_stock=EXCLUDED.production_stock, queue=EXCLUDED.queue`,
-      [id, c.id, c.name, c.owner, c.x, c.y, c.level, c.isCapital, c.contestedBy, c.contestedSinceTurn, c.productionStock, JSON.stringify(c.queue)],
+         production_stock=EXCLUDED.production_stock, queue=EXCLUDED.queue, buildings=EXCLUDED.buildings, food=EXCLUDED.food,
+         specialization=EXCLUDED.specialization`,
+      [id, c.id, c.name, c.owner, c.x, c.y, c.level, c.isCapital, c.contestedBy, c.contestedSinceTurn, c.productionStock, JSON.stringify(c.queue), c.buildings, c.food, c.specialization],
     );
   }
   for (const [pid, ex] of Object.entries(state.explored)) {

@@ -85,7 +85,8 @@ test('полный цикл: два игрока, приказы, готовно
   const unit = myUnits.find(u => u.type === 'scout')!;
   const moves = (await call('GET', `/api/matches/${matchId}/preview/moves?unitId=${unit.id}`, t1)).json.tiles;
   assert.ok(moves.length > 0);
-  const dest = moves.sort((a: any, b: any) => b.cost - a.cost)[0];
+  const occupied = new Set(s1.view.units.map(u => `${u.x},${u.y}`));
+  const dest = moves.filter((m: any) => !occupied.has(`${m.x},${m.y}`)).sort((a: any, b: any) => b.cost - a.cost)[0];
   const route = await findRoute(matchId, unit.id, dest);
   const key = randomUUID();
   const o1 = await call('POST', `/api/matches/${matchId}/orders`, t1, { turn: 1, order: { kind: 'unit', unitId: unit.id, mode: 'move', path: route }, idempotencyKey: key });
@@ -129,7 +130,8 @@ test('полный цикл: два игрока, приказы, готовно
   const after1 = (await call<StateResponse>('GET', `/api/matches/${matchId}/state`, t1)).json;
   assert.equal(after1.view.turn, 2);
   const moved = after1.view.units.find(u => u.id === unit.id)!;
-  assert.deepEqual([moved.x, moved.y], [route[route.length - 1].x, route[route.length - 1].y]);
+  const dbgEv = (await call('GET', `/api/matches/${matchId}/events?turn=1`, t1)).json.events.filter((e: any) => e.event.unitId === unit.id || e.event.attackerId === unit.id);
+  assert.deepEqual([moved.x, moved.y], [route[route.length - 1].x, route[route.length - 1].y], JSON.stringify({ route, start: [unit.x, unit.y], dbgEv }));
   const ev = (await call('GET', `/api/matches/${matchId}/events?turn=1`, t1)).json.events;
   const inc = ev.find((e: any) => e.event.t === 'income').event;
   assert.equal(after1.view.me.gold, BALANCE.economy.startGold - BALANCE.units.infantry.cost.gold + inc.gold - inc.upkeep);
@@ -199,7 +201,9 @@ async function findRoute(matchId: string, unitId: string, dest: { x: number; y: 
   const { findPath } = await import('../../src/engine/path.ts');
   const st = await loadState(db, matchId);
   const u = st.units.find(x => x.id === unitId)!;
-  return findPath(BALANCE, st.map, u, dest, { budget: BALANCE.units[u.type].move })!;
+  // Свои отряды на пути тоже мешают: не прокладываем маршрут через занятые клетки.
+  const blocked = new Set(st.units.filter(x => x.id !== unitId).map(x => x.y * st.map.width + x.x));
+  return findPath(BALANCE, st.map, u, dest, { budget: BALANCE.units[u.type].move, blocked })!;
 }
 
 async function assertReplayable(matchId: string, turn: number) {
@@ -223,7 +227,7 @@ test('этап 2: дорога сохраняется в БД, мини-карт
   const inf = s.view.units.find(u => u.owner === s.view.me.id && u.type === 'infantry')!;
   const r = await call('POST', `/api/matches/${m.id}/orders`, t1, { turn: 1, order: { kind: 'unit', unitId: inf.id, mode: 'build', build: 'road', path: [] }, idempotencyKey: randomUUID() });
   assert.equal(r.json.ok, true, JSON.stringify(r.json));
-  assert.equal(r.json.reserved.gold, BALANCE.roads.goldCost);
+  assert.equal(r.json.reserved.gold, Math.max(1, Math.round(BALANCE.roads.goldCost * (BALANCE.factions.union.traits.roadCostMul ?? 1))));
   // Разведчик: долгий маршрут по исследованным клеткам.
   const sc = s.view.units.find(u => u.owner === s.view.me.id && u.type === 'scout')!;
   // Открываем игроку всю карту (как будто он её разведал), чтобы проложить длинный маршрут.
@@ -282,4 +286,48 @@ test('этап 2: кампания 256×256 стартует, генерация
   await call('POST', `/api/matches/${m.id}/ready`, t2, { turn: 1, ready: true });
   assert.ok(await game.processTurn(m.id, 1));
   await assertReplayable(m.id, 1);
+});
+
+test('этап 3: выбор народа в лобби, постройка и приказ командиру через API, партия с ботом 10 ходов воспроизводима', async () => {
+  const t1 = await devLogin('Злата');
+  const t2 = await devLogin('Игорь');
+  const m = (await call('POST', '/api/matches', t1, { preset: 'quick', faction: 'forest' })).json;
+  assert.equal((await call('POST', `/api/matches/${m.id}/faction`, t1, { faction: 'atlantis' })).status, 400);
+  await call('POST', `/api/matches/${m.id}/faction`, t1, { faction: 'mountain' });
+  const joined = (await call('POST', '/api/matches/join', t2, { inviteCode: m.inviteCode, faction: 'tide' })).json;
+  assert.equal(joined.phase, 'planning');
+  assert.deepEqual(joined.players.map((p: any) => p.faction), ['mountain', 'tide']);
+  assert.equal((await call('POST', `/api/matches/${m.id}/faction`, t1, { faction: 'union' })).status, 409);
+  const s = (await call<StateResponse>('GET', `/api/matches/${m.id}/state`, t1)).json;
+  assert.equal(s.view.me.faction, 'mountain');
+  assert.ok(s.view.me.commander.unitId);
+  assert.ok(s.view.units.some(u => u.type === 'commander' && u.owner === s.view.me.id));
+  const cap = s.view.cities.find(c => c.owner === s.view.me.id)!;
+  const r1 = await call('POST', `/api/matches/${m.id}/orders`, t1, { turn: 1, order: { kind: 'construct', cityId: cap.id, building: 'barracks' }, idempotencyKey: randomUUID() });
+  assert.equal(r1.json.ok, true, JSON.stringify(r1.json));
+  assert.equal(r1.json.reserved.wood, 1);
+  const r2 = await call('POST', `/api/matches/${m.id}/orders`, t1, { turn: 1, order: { kind: 'commander', action: 'direction', direction: 'logistics' }, idempotencyKey: randomUUID() });
+  assert.equal(r2.json.ok, true, JSON.stringify(r2.json));
+  const rules = (await call('GET', '/api/rules')).json;
+  assert.ok(rules.factions.tide && rules.effects.zoc);
+  const ch = (await call('GET', `/api/matches/${m.id}/chunks?list=${Math.floor(cap.x / 16)},${Math.floor(cap.y / 16)}`, t1)).json;
+  assert.ok(ch.chunks[0].supply.some((x: number) => x === 1), 'слой снабжения');
+  await call('POST', `/api/matches/${m.id}/ready`, t1, { turn: 1, ready: true });
+  await call('POST', `/api/matches/${m.id}/ready`, t2, { turn: 1, ready: true });
+  assert.ok(await game.processTurn(m.id, 1));
+  const after = (await call<StateResponse>('GET', `/api/matches/${m.id}/state`, t1)).json;
+  assert.equal(after.view.me.commander.directions.logistics, 1);
+  assert.deepEqual(after.view.cities.find(c => c.id === cap.id)!.queue.map(q => q.unitType), ['barracks']);
+  await assertReplayable(m.id, 1);
+
+  const t3 = await devLogin('Кира');
+  const vb = (await call('POST', '/api/matches', t3, { preset: 'vsbot', faction: 'union' })).json;
+  assert.notEqual(vb.players[1].faction, 'union');
+  for (let turn = 1; turn <= 10; turn++) {
+    await call('POST', `/api/matches/${vb.id}/ready`, t3, { turn, ready: true });
+    assert.ok(await game.processTurn(vb.id, turn), `ход ${turn}`);
+  }
+  for (let t = 1; t <= 10; t++) await assertReplayable(vb.id, t);
+  const { rows } = await db.query(`SELECT count(*)::int n FROM turn_events WHERE match_id=$1 AND event->>'t' = 'order_rejected'`, [vb.id]);
+  assert.equal(rows[0].n, 0, 'бот не отдаёт недопустимых приказов');
 });

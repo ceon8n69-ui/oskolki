@@ -1,6 +1,6 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { resolveTurn } from '../../src/engine/resolve.ts';
+import { buildCost, resolveTurn } from '../../src/engine/resolve.ts';
 import { computeVision } from '../../src/engine/vision.ts';
 import { validateOrder } from '../../src/engine/validate.ts';
 import { landMoveCost } from '../../src/engine/grid.ts';
@@ -76,7 +76,7 @@ test('дорога строится за ход, золото списывает
   assert.ok(r.state.map.features[2 * 12 + 3] & Feature.Road);
   assert.ok(r.events.some(e => e.event.t === 'road_built'));
   const inc = r.events.find(e => e.event.t === 'income' && e.event.playerId === 'A')!.event as any;
-  assert.equal(r.state.players[0].gold, gold0 - b.roads.goldCost + inc.gold - inc.upkeep);
+  assert.equal(r.state.players[0].gold, gold0 - buildCost(b, s, 'A', 'road').gold + inc.gold - inc.upkeep);
   assert.equal(landMoveCost(b, r.state.map, { x: 2, y: 2 }, { x: 3, y: 2 }), b.roadMoveCost);
   // Исходное состояние не изменилось (расчёт чистый).
   assert.equal(s.map.features[2 * 12 + 3] & Feature.Road, 0);

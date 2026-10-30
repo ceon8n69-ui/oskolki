@@ -21,8 +21,8 @@ export function playerView(b: Balance, state: GameState, playerId: PlayerId, vis
     .filter(u => canSeeUnit(b, state, playerId, v, u))
     .map(u =>
       u.owner === playerId
-        ? { ...u, statuses: u.statuses.map(s => ({ ...s })), stale: false as const }
-        : { id: u.id, owner: u.owner, type: u.type, x: u.x, y: u.y, hp: u.hp, rank: u.rank, statuses: u.statuses.map(s => ({ ...s })), stale: false as const },
+        ? { ...u, statuses: u.statuses.map(s => ({ ...s })), perks: [...u.perks], stale: false as const }
+        : { id: u.id, owner: u.owner, type: u.type, x: u.x, y: u.y, hp: u.hp, maxHp: u.maxHp, rank: u.rank, statuses: u.statuses.map(s => ({ ...s })), stale: false as const },
     );
   const visibleIds = new Set(units.map(u => u.id));
   const staleUnits = Object.values(intel.units)
@@ -33,10 +33,10 @@ export function playerView(b: Balance, state: GameState, playerId: PlayerId, vis
     .filter(c => c.owner === playerId || (explored && explored[idx(state.map, c.x, c.y)]))
     .map(c => {
       const visibleNow = c.owner === playerId || !!v.visible[idx(state.map, c.x, c.y)];
-      if (c.owner === playerId) return { id: c.id, name: c.name, x: c.x, y: c.y, owner: c.owner, level: c.level, isCapital: c.isCapital, contestedBy: c.contestedBy, contestedSinceTurn: c.contestedSinceTurn, queue: c.queue.map(q => ({ ...q })), visibleNow, seenTurn: state.turn };
+      if (c.owner === playerId) return { id: c.id, name: c.name, x: c.x, y: c.y, owner: c.owner, level: c.level, isCapital: c.isCapital, contestedBy: c.contestedBy, contestedSinceTurn: c.contestedSinceTurn, queue: c.queue.map(q => ({ ...q })), visibleNow, seenTurn: state.turn, buildings: [...c.buildings], food: c.food, specialization: c.specialization };
       const seen = intel.cities[c.id];
-      if (visibleNow) return { id: c.id, name: c.name, x: c.x, y: c.y, owner: c.owner, level: c.level, isCapital: c.isCapital, contestedBy: c.contestedBy, contestedSinceTurn: c.contestedSinceTurn, queue: [], visibleNow, seenTurn: state.turn };
-      return { id: c.id, name: c.name, x: c.x, y: c.y, owner: seen?.owner ?? null, level: seen?.level ?? c.level, isCapital: c.isCapital, contestedBy: seen?.contestedBy ?? null, contestedSinceTurn: null, queue: [], visibleNow, seenTurn: seen?.seenTurn ?? null };
+      if (visibleNow) return { id: c.id, name: c.name, x: c.x, y: c.y, owner: c.owner, level: c.level, isCapital: c.isCapital, contestedBy: c.contestedBy, contestedSinceTurn: c.contestedSinceTurn, queue: [], visibleNow, seenTurn: state.turn, buildings: c.buildings.filter(x => x === 'walls'), food: null, specialization: c.specialization };
+      return { id: c.id, name: c.name, x: c.x, y: c.y, owner: seen?.owner ?? null, level: seen?.level ?? c.level, isCapital: c.isCapital, contestedBy: seen?.contestedBy ?? null, contestedSinceTurn: null, queue: [], visibleNow, seenTurn: seen?.seenTurn ?? null, buildings: [], food: null, specialization: null };
     });
 
   return {
@@ -45,7 +45,7 @@ export function playerView(b: Balance, state: GameState, playerId: PlayerId, vis
     balanceVersion: state.balanceVersion,
     rulesVersion: state.rulesVersion,
     map: { width: state.map.width, height: state.map.height, chunkSize: state.map.chunkSize },
-    me: { ...me, researched: [...me.researched], researchQueue: [...me.researchQueue] },
+    me: structuredClone(me),
     income: incomeFor(b, state, playerId),
     players: state.players.map(p => ({ id: p.id, name: p.name, faction: p.faction, color: p.color, eliminated: p.eliminated, isBot: p.isBot })),
     units,
@@ -54,13 +54,14 @@ export function playerView(b: Balance, state: GameState, playerId: PlayerId, vis
   };
 }
 
-export function chunkView(state: GameState, playerId: PlayerId, cx: number, cy: number, vision: Vision): ChunkView {
+export function chunkView(state: GameState, playerId: PlayerId, cx: number, cy: number, vision: Vision, supplyGrid?: Uint8Array): ChunkView {
   const { map } = state;
   const cs = map.chunkSize;
   const explored = state.explored[playerId];
   const terrain: number[] = [];
   const features: number[] = [];
   const visible: number[] = [];
+  const supply: number[] = [];
   for (let y = cy * cs; y < Math.min(map.height, (cy + 1) * cs); y++) {
     for (let x = cx * cs; x < Math.min(map.width, (cx + 1) * cs); x++) {
       const i = idx(map, x, y);
@@ -68,9 +69,10 @@ export function chunkView(state: GameState, playerId: PlayerId, cx: number, cy: 
       terrain.push(known ? map.terrain[i] : UNKNOWN_TILE);
       features.push(known ? map.features[i] : 0);
       visible.push(vision.visible[i]);
+      supply.push(supplyGrid ? supplyGrid[i] : 0);
     }
   }
-  return { cx, cy, size: cs, terrain, features, visible };
+  return { cx, cy, size: cs, terrain, features, visible, supply };
 }
 
 /**

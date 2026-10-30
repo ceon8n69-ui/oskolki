@@ -1,6 +1,7 @@
 import type { Balance } from '../shared/balance.ts';
 import type { Coord, MapData } from '../shared/types.ts';
 import { DIRS8, idx, inBounds, isAdjacent, landMoveCost } from './grid.ts';
+import type { TerrainOverrides } from './grid.ts';
 
 export interface PathOptions {
   /** Бюджет очков движения. undefined — без ограничения (долгие маршруты). */
@@ -9,6 +10,10 @@ export interface PathOptions {
   blocked?: Set<number>;
   /** Клетки, через которые можно пройти, но нельзя закончить путь. */
   noStop?: Set<number>;
+  /** Клетки, на которые можно войти, но дальше идти нельзя (зона контроля противника). */
+  stopTiles?: Set<number>;
+  /** Особые стоимости местности для отряда. */
+  profile?: TerrainOverrides;
 }
 
 /** Минимальная бинарная куча по приоритету. */
@@ -68,13 +73,14 @@ export function dijkstra(b: Balance, map: MapData, start: Coord, opts: PathOptio
     const cx = cur % map.width;
     const cy = (cur - cx) / map.width;
     const c = cost[cur];
+    if (cur !== s && opts.stopTiles?.has(cur)) continue;
     for (const [dx, dy] of DIRS8) {
       const nx = cx + dx;
       const ny = cy + dy;
       if (!inBounds(map, nx, ny)) continue;
       const ni = idx(map, nx, ny);
       if (opts.blocked?.has(ni)) continue;
-      const step = landMoveCost(b, map, { x: cx, y: cy }, { x: nx, y: ny });
+      const step = landMoveCost(b, map, { x: cx, y: cy }, { x: nx, y: ny }, opts.profile);
       if (step === null) continue;
       const nc = c + step;
       if (nc > budget + 1e-9) continue;
@@ -113,21 +119,21 @@ export function findPath(b: Balance, map: MapData, from: Coord, to: Coord, opts:
 }
 
 /** Клетки, достижимые за бюджет (для подсветки доступного перемещения). */
-export function reachable(b: Balance, map: MapData, from: Coord, budget: number, blocked?: Set<number>): Map<number, number> {
-  const { cost } = dijkstra(b, map, from, { budget, blocked });
+export function reachable(b: Balance, map: MapData, from: Coord, budget: number, blocked?: Set<number>, extra: Omit<PathOptions, 'budget' | 'blocked'> = {}): Map<number, number> {
+  const { cost } = dijkstra(b, map, from, { budget, blocked, ...extra });
   const out = new Map<number, number>();
   for (let i = 0; i < cost.length; i++) if (Number.isFinite(cost[i]) && cost[i] > 0) out.set(i, cost[i]);
   return out;
 }
 
 /** Проверка пути, присланного клиентом: шаги смежные, клетки проходимы, стоимость в бюджете. */
-export function pathCost(b: Balance, map: MapData, from: Coord, steps: Coord[]): { ok: true; cost: number } | { ok: false; reason: string } {
+export function pathCost(b: Balance, map: MapData, from: Coord, steps: Coord[], profile?: TerrainOverrides): { ok: true; cost: number } | { ok: false; reason: string } {
   let total = 0;
   let cur = from;
   for (const s of steps) {
     if (!Number.isInteger(s.x) || !Number.isInteger(s.y)) return { ok: false, reason: 'bad_coord' };
     if (!isAdjacent(cur, s)) return { ok: false, reason: 'path_not_contiguous' };
-    const c = landMoveCost(b, map, cur, s);
+    const c = landMoveCost(b, map, cur, s, profile);
     if (c === null) return { ok: false, reason: 'impassable' };
     total += c;
     cur = s;

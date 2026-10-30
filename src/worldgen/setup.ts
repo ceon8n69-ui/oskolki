@@ -1,10 +1,11 @@
 // Создание начального состояния партии из сгенерированного мира.
 import type { Balance } from '../shared/balance.ts';
-import type { CityState, GameState, PlayerState, UnitState } from '../shared/types.ts';
+import type { GameState, PlayerState } from '../shared/types.ts';
 import { NEUTRAL } from '../shared/types.ts';
 import { DIRS8, isLandPassable } from '../engine/grid.ts';
 import { RULES_VERSION } from '../engine/resolve.ts';
 import { computeAllVision, updateExploredAndIntel } from '../engine/vision.ts';
+import { newCity, newPlayer, newUnit } from '../engine/factory.ts';
 import type { GeneratedWorld, WorldSpec } from './generate.ts';
 import { generateWorld } from './generate.ts';
 
@@ -33,44 +34,12 @@ export function createInitialState(
   if (world.capitals.length < opts.players.length) throw new Error('генератор не разместил достаточно столиц');
   const seedNum = world.map.seed.length * 31 + world.map.seed.charCodeAt(0);
 
-  const players: PlayerState[] = opts.players.map((p, i) => ({
-    id: p.id,
-    name: p.name,
-    faction: p.faction,
-    color: b.factions[p.faction]?.color && i === 0 ? b.factions[p.faction].color : COLORS[i % COLORS.length],
-    gold: b.economy.startGold,
-    knowledge: 0,
-    researched: [],
-    researchQueue: [],
-    researchProgress: 0,
-    isBot: p.isBot,
-    eliminated: false,
-  }));
-
-  const cities: CityState[] = [];
-  const units: UnitState[] = [];
-  let unitSeq = 1;
-  const newUnit = (owner: string, type: string, x: number, y: number): UnitState => ({
-    id: `u${unitSeq++}`, owner, type, x, y, hp: b.units[type].hp, xp: 0, rank: 0, statuses: [], countersUsed: 0, createdTurn: 1,
+  const players: PlayerState[] = opts.players.map((p, i) => {
+    const faction = b.factions[p.faction] ? p.faction : 'union';
+    // Цвет народа у первого игрока этого народа, остальным — из палитры.
+    const firstOfFaction = opts.players.findIndex(q => q.faction === faction) === i;
+    return newPlayer(b, { id: p.id, name: p.name, faction, isBot: p.isBot, color: firstOfFaction ? b.factions[faction].color : COLORS[i % COLORS.length] });
   });
-
-  players.forEach((p, i) => {
-    const c = world.capitals[i];
-    cities.push({ id: `c${cities.length + 1}`, name: cityName(cities.length, seedNum), owner: p.id, x: c.x, y: c.y, level: 2, isCapital: true, contestedBy: null, contestedSinceTurn: null, productionStock: 0, queue: [] });
-    const start = b.factions[p.faction]?.startUnits ?? ['infantry'];
-    const spots = [{ x: c.x, y: c.y }, ...DIRS8.map(([dx, dy]) => ({ x: c.x + dx, y: c.y + dy }))].filter(s => isLandPassable(b, world.map, s.x, s.y));
-    start.forEach((type, k) => {
-      const s = spots[k];
-      if (s) units.push(newUnit(p.id, type, s.x, s.y));
-    });
-  });
-  // Свободные столичные позиции (если игроков меньше) становятся нейтральными городами.
-  const neutral = [...world.capitals.slice(players.length), ...world.neutralCities];
-  for (const c of neutral) {
-    cities.push({ id: `c${cities.length + 1}`, name: cityName(cities.length, seedNum), owner: null, x: c.x, y: c.y, level: 1, isCapital: false, contestedBy: null, contestedSinceTurn: null, productionStock: 0, queue: [] });
-    units.push(newUnit(NEUTRAL, b.cities.neutralGarrison, c.x, c.y));
-  }
-
   const state: GameState = {
     matchId: opts.matchId,
     turn: 1,
@@ -78,12 +47,38 @@ export function createInitialState(
     rulesVersion: RULES_VERSION,
     map: world.map,
     players,
-    units,
-    cities,
+    units: [],
+    cities: [],
     explored: {},
     intel: {},
-    nextIds: { unit: unitSeq },
+    nextIds: { unit: 1 },
   };
+  const { cities, units } = state;
+  const spawn = (owner: string, type: string, x: number, y: number) => {
+    const u = newUnit(b, state, { id: `u${state.nextIds.unit++}`, owner, type, x, y, createdTurn: 1 });
+    units.push(u);
+    return u;
+  };
+
+  players.forEach((p, i) => {
+    const c = world.capitals[i];
+    cities.push(newCity({ id: `c${cities.length + 1}`, name: cityName(cities.length, seedNum), owner: p.id, x: c.x, y: c.y, level: 2, isCapital: true }));
+    const start = [...b.factions[p.faction].startUnits, 'commander'];
+    const spots = [{ x: c.x, y: c.y }, ...DIRS8.map(([dx, dy]) => ({ x: c.x + dx, y: c.y + dy }))].filter(s => isLandPassable(b, world.map, s.x, s.y));
+    start.forEach((type, k) => {
+      const s = spots[k];
+      if (!s) return;
+      const u = spawn(p.id, type, s.x, s.y);
+      if (type === 'commander') p.commander.unitId = u.id;
+    });
+  });
+  // Свободные столичные позиции (если игроков меньше) становятся нейтральными городами.
+  const neutral = [...world.capitals.slice(players.length), ...world.neutralCities];
+  for (const c of neutral) {
+    cities.push(newCity({ id: `c${cities.length + 1}`, name: cityName(cities.length, seedNum), owner: null, x: c.x, y: c.y, level: 1 }));
+    spawn(NEUTRAL, b.cities.neutralGarrison, c.x, c.y);
+  }
+
   updateExploredAndIntel(b, state, computeAllVision(b, state));
   return { state, world };
 }

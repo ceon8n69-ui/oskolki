@@ -12,8 +12,12 @@ export interface ViewUnit {
   hp: number;
   rank: number;
   statuses: StatusEffect[];
+  maxHp: number;
   xp?: number; // только свои
   route?: UnitRoute | null; // только свои: долгий маршрут
+  perks?: string[]; // только свои
+  pendingPerks?: number; // только свои: ждёт выбора улучшения
+  supplyOut?: number; // только свои
   stale: false;
 }
 
@@ -41,6 +45,9 @@ export interface ViewCity {
   queue: ProductionItem[];
   visibleNow: boolean;
   seenTurn: number | null;
+  buildings: string[]; // свои — все; чужие — только видимые снаружи (стены)
+  food: number | null; // только свои
+  specialization: string | null;
 }
 
 export interface PublicPlayer {
@@ -59,7 +66,11 @@ export interface PlayerView {
   rulesVersion: string;
   map: { width: number; height: number; chunkSize: number };
   me: PlayerState;
-  income: { gold: number; upkeep: number; knowledge: number; production: Record<string, number> };
+  income: {
+    gold: number; upkeep: number; knowledge: number; production: Record<string, number>;
+    materials: { wood: number; iron: number; crystal: number };
+    cities: Record<string, { gold: number; production: number; knowledge: number; food: number; wood: number; iron: number; crystal: number }>;
+  };
   players: PublicPlayer[];
   units: ViewUnit[];
   staleUnits: StaleUnit[];
@@ -73,6 +84,7 @@ export interface ChunkView {
   terrain: number[]; // 255 — неизвестно
   features: number[];
   visible: number[]; // 1 — видно сейчас
+  supply: number[]; // 1 — своя зона снабжения (слой логистики)
 }
 
 export type MatchPhase = 'lobby' | 'planning' | 'resolving' | 'finished';
@@ -94,7 +106,7 @@ export interface StateResponse {
   match: MatchInfo;
   view: PlayerView;
   orders: OrderRecord[];
-  reserved: { gold: number };
+  reserved: Reserved;
 }
 
 export interface OrderRecord {
@@ -116,7 +128,14 @@ export interface SubmitOrderResponse {
   ok: boolean;
   order?: OrderRecord;
   reason?: string;
-  reserved?: { gold: number };
+  reserved?: Reserved;
+}
+
+export interface Reserved {
+  gold: number;
+  wood: number;
+  iron: number;
+  crystal: number;
 }
 
 export interface TurnEventsResponse {

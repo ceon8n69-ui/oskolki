@@ -1,0 +1,243 @@
+{
+  "version": "balance-2.0.0",
+  "map": {
+    "chunkSize": 16,
+    "presets": {
+      "test32": { "width": 32, "height": 32, "players": 2, "neutralCities": 4, "minCapitalDistance": 14 },
+      "small64": { "width": 64, "height": 64, "players": 4, "neutralCities": 12, "minCapitalDistance": 22 },
+      "world256": { "width": 256, "height": 256, "players": 32, "neutralCities": 140, "minCapitalDistance": 22 }
+    }
+  },
+  "terrain": {
+    "deep_water":    { "moveCost": null, "defense": 1.0,  "visionBonus": 0, "hidesUnits": false, "height": 0 },
+    "shallow_water": { "moveCost": null, "defense": 1.0,  "visionBonus": 0, "hidesUnits": false, "height": 0 },
+    "plains":        { "moveCost": 1,    "defense": 1.0,  "visionBonus": 0, "hidesUnits": false, "height": 1 },
+    "forest":        { "moveCost": 2,    "defense": 1.25, "visionBonus": 0, "hidesUnits": true,  "height": 1 },
+    "hills":         { "moveCost": 2,    "defense": 1.5,  "visionBonus": 1, "hidesUnits": false, "height": 2 },
+    "mountain":      { "moveCost": null, "defense": 2.0,  "visionBonus": 2, "hidesUnits": false, "height": 3 }
+  },
+  "roadMoveCost": 0.5,
+  "bridgeMoveCost": 1,
+  "combat": {
+    "damageScale": 4.5,
+    "fortifyDefense": 1.25,
+    "cityDefense": 1.5,
+    "maxCountersPerTurn": 1,
+    "minDamage": 1,
+    "coverDefense": 1.15,
+    "highGroundAttack": 1.2,
+    "suppressedAttack": 0.75,
+    "unsuppliedMultiplier": 0.8,
+    "siegeVsCity": 1.5
+  },
+  "classes": {
+    "scout": "Разведчик", "infantry": "Пехота", "shield": "Щитоносцы", "spear": "Копейщики",
+    "ranged": "Стрелки", "cavalry": "Кавалерия", "siege": "Осадные", "engineer": "Инженеры", "commander": "Командир"
+  },
+  "units": {
+    "scout":        { "name": "Разведчик",      "class": "scout",    "hp": 8,  "attack": 1, "defense": 1, "move": 4, "range": 1, "vision": 3, "initiative": 4, "cost": { "gold": 6,  "production": 4 }, "upkeep": 1, "requires": null,           "faction": null, "xpOnKill": 2, "abilities": ["ignore_zoc"] },
+    "infantry":     { "name": "Пехотинец",      "class": "infantry", "hp": 10, "attack": 2, "defense": 2, "move": 2, "range": 1, "vision": 2, "initiative": 2, "cost": { "gold": 8,  "production": 6 }, "upkeep": 1, "requires": null,           "faction": null, "xpOnKill": 2, "abilities": ["zoc", "build"] },
+    "shieldbearer": { "name": "Щитоносец",      "class": "shield",   "hp": 12, "attack": 1, "defense": 3, "move": 2, "range": 1, "vision": 2, "initiative": 2, "cost": { "gold": 10, "production": 7, "iron": 1 }, "upkeep": 2, "requires": "shields", "faction": null, "xpOnKill": 2, "abilities": ["zoc", "cover", "knockback"] },
+    "spearman":     { "name": "Копейщик",       "class": "spear",    "hp": 10, "attack": 2, "defense": 3, "move": 2, "range": 1, "vision": 2, "initiative": 3, "cost": { "gold": 10, "production": 7, "wood": 1 }, "upkeep": 2, "requires": "spearcraft", "faction": null, "xpOnKill": 2, "abilities": ["zoc", "build"], "bonusVs": { "cavalry": 1.5, "scout": 1.5 } },
+    "archer":       { "name": "Лучник",         "class": "ranged",   "hp": 10, "attack": 2, "defense": 1, "move": 2, "range": 2, "vision": 2, "initiative": 1, "cost": { "gold": 10, "production": 7, "wood": 1 }, "upkeep": 2, "requires": "archery",    "faction": null, "xpOnKill": 2, "abilities": ["suppress"] },
+    "cavalry":      { "name": "Всадник",        "class": "cavalry",  "hp": 12, "attack": 3, "defense": 1, "move": 4, "range": 1, "vision": 3, "initiative": 5, "cost": { "gold": 14, "production": 9, "iron": 1 }, "upkeep": 3, "requires": "horsemanship", "faction": null, "xpOnKill": 2, "abilities": ["ignore_zoc"], "bonusVs": { "ranged": 1.25, "siege": 1.5 } },
+    "siege":        { "name": "Катапульта",     "class": "siege",    "hp": 8,  "attack": 4, "defense": 1, "move": 1, "range": 3, "vision": 1, "initiative": 0, "cost": { "gold": 16, "production": 10, "wood": 2, "iron": 1 }, "upkeep": 3, "requires": "siegecraft", "faction": null, "xpOnKill": 2, "abilities": ["no_attack_after_move", "suppress", "siege"] },
+    "engineer":     { "name": "Инженер",        "class": "engineer", "hp": 8,  "attack": 1, "defense": 1, "move": 2, "range": 1, "vision": 2, "initiative": 1, "cost": { "gold": 8,  "production": 5 }, "upkeep": 1, "requires": "engineering", "faction": null, "xpOnKill": 1, "abilities": ["build", "build_fort", "fast_build"] },
+
+    "legionary":    { "name": "Легионер",       "class": "shield",   "hp": 13, "attack": 2, "defense": 3, "move": 2, "range": 1, "vision": 2, "initiative": 3, "cost": { "gold": 13, "production": 8, "iron": 1 }, "upkeep": 2, "requires": "union_legion", "faction": "union", "xpOnKill": 2, "abilities": ["zoc", "cover", "build"] },
+    "standard":     { "name": "Знаменосец",     "class": "infantry", "hp": 10, "attack": 1, "defense": 2, "move": 2, "range": 1, "vision": 3, "initiative": 2, "cost": { "gold": 12, "production": 7 }, "upkeep": 2, "requires": "union_banners", "faction": "union", "xpOnKill": 2, "abilities": ["inspire"] },
+    "ranger":       { "name": "Следопыт леса",  "class": "ranged",   "hp": 10, "attack": 2, "defense": 1, "move": 3, "range": 2, "vision": 3, "initiative": 2, "cost": { "gold": 12, "production": 7, "wood": 1 }, "upkeep": 2, "requires": "forest_rangers", "faction": "forest", "xpOnKill": 2, "abilities": ["suppress", "forest_stride"] },
+    "warden":       { "name": "Страж рощи",     "class": "infantry", "hp": 12, "attack": 2, "defense": 3, "move": 2, "range": 1, "vision": 2, "initiative": 2, "cost": { "gold": 12, "production": 8, "wood": 1 }, "upkeep": 2, "requires": "forest_wardens", "faction": "forest", "xpOnKill": 2, "abilities": ["zoc", "forest_stride", "plant_forest"] },
+    "ironclad":     { "name": "Латник гор",     "class": "infantry", "hp": 15, "attack": 3, "defense": 4, "move": 1, "range": 1, "vision": 2, "initiative": 2, "cost": { "gold": 18, "production": 11, "iron": 2 }, "upkeep": 3, "requires": "mountain_iron", "faction": "mountain", "xpOnKill": 2, "abilities": ["zoc", "heavy"] },
+    "bombard":      { "name": "Бомбарда",       "class": "siege",    "hp": 9,  "attack": 5, "defense": 1, "move": 1, "range": 3, "vision": 1, "initiative": 0, "cost": { "gold": 20, "production": 12, "iron": 2, "crystal": 1 }, "upkeep": 3, "requires": "mountain_bombard", "faction": "mountain", "xpOnKill": 2, "abilities": ["no_attack_after_move", "suppress", "siege"] },
+    "corsair":      { "name": "Корсар",         "class": "infantry", "hp": 10, "attack": 3, "defense": 2, "move": 3, "range": 1, "vision": 3, "initiative": 4, "cost": { "gold": 12, "production": 7 }, "upkeep": 2, "requires": "tide_corsairs", "faction": "tide", "xpOnKill": 2, "abilities": ["amphibious", "ignore_zoc"] },
+    "tidecaller":   { "name": "Заклинатель приливов", "class": "ranged", "hp": 9, "attack": 2, "defense": 1, "move": 2, "range": 2, "vision": 3, "initiative": 1, "cost": { "gold": 13, "production": 8, "crystal": 1 }, "upkeep": 2, "requires": "tide_callers", "faction": "tide", "xpOnKill": 2, "abilities": ["amphibious", "suppress"] },
+
+    "commander":    { "name": "Командир",       "class": "commander", "hp": 14, "attack": 2, "defense": 2, "move": 3, "range": 1, "vision": 3, "initiative": 3, "cost": { "gold": 0, "production": 0 }, "upkeep": 0, "requires": null, "recruitable": false, "faction": null, "xpOnKill": 3, "abilities": ["zoc", "commander"] }
+  },
+  "ranks": {
+    "thresholds": [0, 4, 10],
+    "hpBonus": [0, 2, 4],
+    "attackMultiplier": [1.0, 1.1, 1.2]
+  },
+  "perks": {
+    "hold_defense":    { "name": "Стойкость",          "description": "Укрепление даёт ещё ×1.15 к защите" },
+    "forest_move":     { "name": "Лесная тропа",       "description": "Лес стоит 1 очко движения" },
+    "suppress_resist": { "name": "Выдержка",           "description": "Невосприимчивость к подавлению" },
+    "vs_cavalry":      { "name": "Против конницы",     "description": "Атака ×1.15 против кавалерии" },
+    "vs_infantry":     { "name": "Против пехоты",      "description": "Атака ×1.15 против пехоты, щитоносцев и копейщиков" },
+    "vs_ranged":       { "name": "Против стрелков",    "description": "Атака ×1.15 против стрелков и осадных" }
+  },
+  "xp": { "perCombat": 1, "perCapture": 2, "perBuild": 1 },
+  "cities": {
+    "goldPerLevel": [0, 4, 6, 8, 10, 12],
+    "productionPerLevel": [0, 3, 4, 5, 6, 7],
+    "knowledgePerLevel": [0, 2, 3, 4, 5, 6],
+    "growthThresholds": [0, 0, 8, 18, 32, 50],
+    "baseFood": 2,
+    "maxLevel": 5,
+    "capitalBonusGold": 2,
+    "occupiedIncomeMultiplier": 0,
+    "visionRadius": 2,
+    "neutralGarrison": "infantry",
+    "materialRadius": 2,
+    "specializeMinLevel": 3,
+    "maxQueue": 3
+  },
+  "buildings": {
+    "farm":          { "name": "Ферма",          "cost": { "production": 6,  "wood": 1 }, "requires": "agriculture", "effects": { "food": 2 } },
+    "lumber_mill":   { "name": "Лесопилка",      "cost": { "production": 6 },             "requires": "forestry",    "effects": { "production": 1, "woodPerTile": 1 } },
+    "mine":          { "name": "Шахта",          "cost": { "production": 8,  "wood": 1 }, "requires": "mining",      "effects": { "production": 1, "ironPerTile": 1, "crystalPerTile": 1 } },
+    "market":        { "name": "Рынок",          "cost": { "production": 8,  "wood": 1 }, "requires": "trade",       "effects": { "gold": 3 } },
+    "barracks":      { "name": "Казарма",        "cost": { "production": 8,  "wood": 1 }, "requires": null,          "effects": { "unitProduction": 2, "recruitXp": 2 } },
+    "forge":         { "name": "Кузница",        "cost": { "production": 10, "iron": 1 }, "requires": "smithing",    "effects": { "iron": 1 } },
+    "academy":       { "name": "Академия",       "cost": { "production": 10, "wood": 1 }, "requires": "academia",    "effects": { "knowledge": 3 } },
+    "walls":         { "name": "Стены",          "cost": { "production": 10, "wood": 2 }, "requires": "masonry",     "effects": { "cityDefense": 0.5 } },
+    "supply_depot":  { "name": "Склад снабжения", "cost": { "production": 6, "wood": 1 }, "requires": "logistics",   "effects": { "supplyRadius": 2 } }
+  },
+  "specializations": {
+    "fortress":   { "name": "Крепость",     "effects": { "cityDefense": 0.5, "garrisonHeal": 2 } },
+    "trade":      { "name": "Торговый",     "effects": { "goldMul": 1.5, "upkeepRelief": 2 } },
+    "industrial": { "name": "Промышленный", "effects": { "productionMul": 1.5 } },
+    "science":    { "name": "Научный",      "effects": { "knowledgeMul": 1.5 } }
+  },
+  "supply": {
+    "cityRadius": [0, 3, 3, 4, 4, 5],
+    "lowSupplyAfter": 1,
+    "unsuppliedAfter": 2
+  },
+  "healing": { "inSupply": 2, "inOwnCity": 3 },
+  "commander": {
+    "startPoints": 2,
+    "pointsPerTurn": 1,
+    "maxPoints": 5,
+    "respawnTurns": 4,
+    "respawnGold": 15,
+    "auraRadius": 2,
+    "directions": {
+      "tactics":   { "name": "Тактика",   "description": "Союзники в радиусе 2: атака ×1.1 за уровень" },
+      "logistics": { "name": "Логистика", "description": "Командир — источник снабжения радиусом 2 + уровень; союзники рядом лечатся на +1 за уровень" },
+      "scouting":  { "name": "Разведка",  "description": "Союзники в радиусе 2: обзор +1 за уровень" }
+    },
+    "abilities": {
+      "rally":         { "name": "Приказ укрепиться", "cost": 2, "cooldown": 3, "description": "Свои отряды в радиусе 2, не двигающиеся в этот ход, укрепляются" },
+      "scout_pulse":   { "name": "Разведывательный импульс", "cost": 1, "cooldown": 2, "range": 8, "radius": 3, "description": "Обзор радиусом 3 вокруг выбранной клетки на этот ход" },
+      "siege_support": { "name": "Поддержка осады", "cost": 2, "cooldown": 3, "description": "Свои отряды в радиусе 2: атака ×1.25 по целям в городах в этот ход" },
+      "forced_march":  { "name": "Ускоренный марш", "cost": 2, "cooldown": 3, "description": "Свои отряды в радиусе 2 получают +1 к движению в этот ход (учитывается при проверке путей)" }
+    }
+  },
+  "materials": ["wood", "iron", "crystal"],
+  "economy": {
+    "startGold": 20,
+    "startMaterials": { "wood": 2, "iron": 0, "crystal": 0 },
+    "deficitRecruitBlocked": true
+  },
+  "capture": { "holdTurns": 1 },
+  "routes": { "threatRadius": 3, "maxLength": 160 },
+  "roads": { "goldCost": 3, "builders": ["infantry", "spearman", "engineer", "legionary"], "territoryRadius": 3 },
+  "forts": { "goldCost": 6, "woodCost": 2, "defenseMul": 1.3 },
+  "plantForest": { "goldCost": 2 },
+  "techs": {
+    "agriculture":   { "name": "Земледелие",        "branch": "economy",  "cost": 6,  "requires": [], "unlocksUnits": [], "unlocksBuildings": ["farm"], "modifiers": {} },
+    "forestry":      { "name": "Лесное дело",       "branch": "economy",  "cost": 6,  "requires": [], "unlocksUnits": [], "unlocksBuildings": ["lumber_mill"], "modifiers": {} },
+    "mining":        { "name": "Горное дело",       "branch": "economy",  "cost": 8,  "requires": [], "unlocksUnits": [], "unlocksBuildings": ["mine"], "modifiers": {} },
+    "trade":         { "name": "Торговля",          "branch": "economy",  "cost": 10, "requires": ["agriculture"], "unlocksUnits": [], "unlocksBuildings": ["market"], "modifiers": {} },
+    "currency":      { "name": "Чеканка монеты",    "branch": "economy",  "cost": 14, "requires": ["trade"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "goldPerCity": 1 } },
+    "masonry":       { "name": "Каменная кладка",   "branch": "economy",  "cost": 10, "requires": ["mining"], "unlocksUnits": [], "unlocksBuildings": ["walls"], "modifiers": { "cityDefenseBonus": 0.25 } },
+
+    "spearcraft":    { "name": "Древковое оружие",  "branch": "military", "cost": 6,  "requires": [], "unlocksUnits": ["spearman"], "unlocksBuildings": [], "modifiers": {} },
+    "shields":       { "name": "Щиты",              "branch": "military", "cost": 8,  "requires": [], "unlocksUnits": ["shieldbearer"], "unlocksBuildings": [], "modifiers": {} },
+    "archery":       { "name": "Стрелковое дело",   "branch": "military", "cost": 8,  "requires": [], "unlocksUnits": ["archer"], "unlocksBuildings": [], "modifiers": {} },
+    "longbows":      { "name": "Дальнобойные стрелки", "branch": "military", "cost": 12, "requires": ["archery"], "excludes": ["skirmishers"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "rangeBonus": { "ranged": 1 } } },
+    "skirmishers":   { "name": "Подвижные следопыты", "branch": "military", "cost": 12, "requires": ["archery"], "excludes": ["longbows"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "moveBonus": { "ranged": 1 } } },
+    "smithing":      { "name": "Кузнечное дело",    "branch": "military", "cost": 12, "requires": ["mining"], "unlocksUnits": [], "unlocksBuildings": ["forge"], "modifiers": { "attackBonus": 0.5 } },
+    "horsemanship":  { "name": "Верховая езда",     "branch": "military", "cost": 12, "requires": ["agriculture"], "unlocksUnits": ["cavalry"], "unlocksBuildings": [], "modifiers": {} },
+    "siegecraft":    { "name": "Осадное дело",      "branch": "military", "cost": 14, "requires": ["engineering"], "unlocksUnits": ["siege"], "unlocksBuildings": [], "modifiers": {} },
+    "mobile_siege":  { "name": "Подвижные орудия",  "branch": "military", "cost": 16, "requires": ["siegecraft"], "excludes": ["heavy_siege"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "siegeAttackAfterMove": true } },
+    "heavy_siege":   { "name": "Тяжёлые орудия",    "branch": "military", "cost": 16, "requires": ["siegecraft"], "excludes": ["mobile_siege"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "attackBonusClass": { "siege": 1 } } },
+    "drill":         { "name": "Строевая выучка",   "branch": "military", "cost": 14, "requires": ["shields"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "xpMul": 1.5 } },
+
+    "engineering":   { "name": "Инженерия",         "branch": "movement", "cost": 8,  "requires": [], "unlocksUnits": ["engineer"], "unlocksBuildings": [], "modifiers": {} },
+    "roadbuilding":  { "name": "Мощёные дороги",    "branch": "movement", "cost": 10, "requires": ["engineering"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "roadCostMul": 0.5 } },
+    "logistics":     { "name": "Обозы",             "branch": "movement", "cost": 12, "requires": ["roadbuilding"], "unlocksUnits": [], "unlocksBuildings": ["supply_depot"], "modifiers": { "supplyRadius": 1 } },
+    "field_medicine":{ "name": "Полевая медицина",  "branch": "movement", "cost": 12, "requires": ["agriculture"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "healBonus": 1 } },
+
+    "cartography":   { "name": "Картография",       "branch": "knowledge", "cost": 8,  "requires": [], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "visionBonusClass": { "scout": 1, "cavalry": 1 } } },
+    "academia":      { "name": "Учёность",          "branch": "knowledge", "cost": 10, "requires": [], "unlocksUnits": [], "unlocksBuildings": ["academy"], "modifiers": {} },
+    "watchtowers":   { "name": "Дозорные башни",    "branch": "knowledge", "cost": 10, "requires": ["cartography"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "cityVisionBonus": 1 } },
+
+    "union_legion":  { "name": "Легионы",           "branch": "legacy", "faction": "union", "cost": 10, "requires": ["shields"], "unlocksUnits": ["legionary"], "unlocksBuildings": [], "modifiers": {} },
+    "union_banners": { "name": "Знамёна Союза",     "branch": "legacy", "faction": "union", "cost": 10, "requires": [], "unlocksUnits": ["standard"], "unlocksBuildings": [], "modifiers": {} },
+    "union_highways":{ "name": "Имперские тракты",  "branch": "legacy", "faction": "union", "cost": 12, "requires": ["roadbuilding"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "roadSupply": true } },
+    "union_phalanx": { "name": "Фаланга",           "branch": "legacy", "faction": "union", "cost": 14, "requires": ["union_legion"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "formationBonus": 0.1 } },
+
+    "forest_rangers":{ "name": "Следопыты",         "branch": "legacy", "faction": "forest", "cost": 10, "requires": ["archery"], "unlocksUnits": ["ranger"], "unlocksBuildings": [], "modifiers": {} },
+    "forest_wardens":{ "name": "Стражи рощ",        "branch": "legacy", "faction": "forest", "cost": 10, "requires": [], "unlocksUnits": ["warden"], "unlocksBuildings": [], "modifiers": {} },
+    "forest_growth": { "name": "Рост чащи",         "branch": "legacy", "faction": "forest", "cost": 12, "requires": ["forest_wardens"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "plantForestAny": true } },
+    "forest_ambush": { "name": "Искусство засады",  "branch": "legacy", "faction": "forest", "cost": 14, "requires": ["forest_rangers"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "ambushBonus": 0.15 } },
+
+    "mountain_iron":   { "name": "Железные латы",   "branch": "legacy", "faction": "mountain", "cost": 12, "requires": ["mining"], "unlocksUnits": ["ironclad"], "unlocksBuildings": [], "modifiers": {} },
+    "mountain_bombard":{ "name": "Бомбарды",        "branch": "legacy", "faction": "mountain", "cost": 16, "requires": ["siegecraft"], "unlocksUnits": ["bombard"], "unlocksBuildings": [], "modifiers": {} },
+    "mountain_tunnels":{ "name": "Тоннели",         "branch": "legacy", "faction": "mountain", "cost": 12, "requires": ["mining"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "mountainMoveCost": 2 } },
+    "mountain_bastion":{ "name": "Бастионы",        "branch": "legacy", "faction": "mountain", "cost": 14, "requires": ["masonry"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "fortBonus": 0.2 } },
+
+    "tide_corsairs":   { "name": "Корсары",         "branch": "legacy", "faction": "tide", "cost": 10, "requires": [], "unlocksUnits": ["corsair"], "unlocksBuildings": [], "modifiers": {} },
+    "tide_callers":    { "name": "Зов прилива",     "branch": "legacy", "faction": "tide", "cost": 12, "requires": ["academia"], "unlocksUnits": ["tidecaller"], "unlocksBuildings": [], "modifiers": {} },
+    "tide_currents":   { "name": "Течения",         "branch": "legacy", "faction": "tide", "cost": 12, "requires": ["tide_corsairs"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "deepWater": true } },
+    "tide_harbors":    { "name": "Гавани",          "branch": "legacy", "faction": "tide", "cost": 12, "requires": ["trade"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "coastalGold": 2 } }
+  },
+  "factions": {
+    "union": {
+      "name": "Союз городов", "color": "#3568aa", "startUnits": ["infantry", "scout"],
+      "mechanic": "Построения: отряд рядом с двумя и более союзниками получает ×1.15 к защите. Дороги вдвое дешевле.",
+      "weakness": "Одиночные отряды теряют бонус: разрывайте строй, атакуйте фланги кавалерией и стрелками.",
+      "traits": { "formation": { "minAllies": 2, "defenseMul": 1.15 }, "roadCostMul": 0.5 },
+      "commander": { "name": "Консул", "abilities": ["rally", "siege_support"] }
+    },
+    "forest": {
+      "name": "Лесные хранители", "color": "#3e8a4e", "startUnits": ["infantry", "scout"],
+      "mechanic": "Лес стоит 1 очко движения; атака из леса по цели, не видевшей отряд в начале хода, — засада ×1.25. Могут сажать лес.",
+      "weakness": "Атака по отрядам в городах ×0.8. Открытая местность и разведка лишают засад.",
+      "traits": { "forestCost": 1, "ambushMul": 1.25, "vsCityMul": 0.8, "plantForest": true },
+      "commander": { "name": "Старейшина", "abilities": ["scout_pulse", "rally"] }
+    },
+    "mountain": {
+      "name": "Горные кланы", "color": "#8a6a3e", "startUnits": ["infantry", "scout"],
+      "mechanic": "Холмы стоят 1 очко движения; строят укрепления (×1.3 к защите на клетке); отряды крепче.",
+      "weakness": "Отряды дороже на 20% золота; медленные. Обходите укрепления, бейте по коммуникациям.",
+      "traits": { "hillsCost": 1, "costMul": 1.2, "buildFort": true, "hpBonus": 1 },
+      "commander": { "name": "Тан", "abilities": ["rally", "siege_support"] }
+    },
+    "tide": {
+      "name": "Народ Приливов", "color": "#2a9a9a", "startUnits": ["infantry", "scout"],
+      "mechanic": "Все отряды ходят по мелководью; у воды атака ×1.15.",
+      "weakness": "Дальше 3 клеток от воды атака ×0.85. Уводите бой вглубь суши.",
+      "traits": { "shallowWater": true, "coastAttackMul": 1.15, "inlandDistance": 3, "inlandAttackMul": 0.85 },
+      "commander": { "name": "Адмирал", "abilities": ["scout_pulse", "forced_march"] }
+    }
+  },
+  "effects": {
+    "fortified":     { "name": "Укреплён",      "icon": "shield",   "source": "приказ «удержание», способность «Приказ укрепиться»", "duration": "до движения или атаки", "stacking": false, "removal": "движение, атака", "description": "Защита ×1.25" },
+    "cover":         { "name": "Прикрытие",     "icon": "cover",    "source": "соседний свой отряд со способностью «прикрытие»", "duration": "пока рядом", "stacking": false, "removal": "прикрывающий ушёл или погиб", "description": "Защита ×1.15" },
+    "formation":     { "name": "Строй",         "icon": "formation","source": "Союз городов: ≥2 соседних союзника", "duration": "пока в строю", "stacking": false, "removal": "строй разорван", "description": "Защита ×1.15" },
+    "suppressed":    { "name": "Подавлен",      "icon": "suppress", "source": "попадание стрелков или осадных", "duration": "1 ход", "stacking": false, "removal": "конец следующего хода; перк «Выдержка» защищает", "description": "Атака ×0.75" },
+    "zoc":           { "name": "Зона контроля", "icon": "zoc",      "source": "пехота, щитоносцы, копейщики, командир", "duration": "постоянно", "stacking": false, "removal": "—", "description": "Вошедший на соседнюю клетку противник останавливается (кроме разведчиков, кавалерии, корсаров)" },
+    "high_ground":   { "name": "Высота",        "icon": "height",   "source": "атакующий выше цели", "duration": "в момент атаки", "stacking": false, "removal": "—", "description": "Атака ×1.2" },
+    "ambush":        { "name": "Засада",        "icon": "ambush",   "source": "Лесные хранители: атака из леса по не заметившему противнику", "duration": "в момент атаки", "stacking": false, "removal": "—", "description": "Атака ×1.25" },
+    "knockback":     { "name": "Отталкивание",  "icon": "push",     "source": "способность щитоносца", "duration": "мгновенно", "stacking": false, "removal": "—", "description": "Выжившая цель сдвигается на клетку назад, если она свободна" },
+    "low_supply":    { "name": "Снабжение под угрозой", "icon": "supply_low", "source": "1 ход вне зоны снабжения", "duration": "до возвращения", "stacking": false, "removal": "вернуться в зону", "description": "Нет лечения; со следующего хода — штраф" },
+    "unsupplied":    { "name": "Без снабжения", "icon": "supply_none", "source": "2+ хода вне зоны снабжения", "duration": "до возвращения", "stacking": false, "removal": "вернуться в зону", "description": "Атака и защита ×0.8, нет лечения" },
+    "fort":          { "name": "Укрепление",    "icon": "fort",     "source": "постройка на клетке (Горные кланы, инженеры)", "duration": "постоянно", "stacking": false, "removal": "—", "description": "Защита ×1.3 для отряда на клетке" },
+    "inspire":       { "name": "Воодушевление", "icon": "banner",   "source": "соседний Знаменосец", "duration": "пока рядом", "stacking": false, "removal": "знаменосец ушёл", "description": "Атака ×1.1" },
+    "tactics":       { "name": "Тактика командира", "icon": "commander", "source": "командир в радиусе 2", "duration": "пока рядом", "stacking": false, "removal": "—", "description": "Атака ×1.1 за уровень направления" },
+    "siege_support": { "name": "Поддержка осады", "icon": "siege",  "source": "способность командира", "duration": "1 ход", "stacking": false, "removal": "конец хода", "description": "Атака ×1.25 по целям в городах" },
+    "coast":         { "name": "Прибрежная мощь", "icon": "wave",   "source": "Народ Приливов у воды", "duration": "пока у воды", "stacking": false, "removal": "—", "description": "Атака ×1.15" },
+    "inland":        { "name": "Вдали от моря", "icon": "dry",      "source": "Народ Приливов дальше 3 клеток от воды", "duration": "пока вдали", "stacking": false, "removal": "вернуться к воде", "description": "Атака ×0.85" }
+  },
+  "turnPresets": {
+    "quick":    { "planningSeconds": 90,    "mapPreset": "test32" },
+    "async":    { "planningSeconds": 21600, "mapPreset": "small64" },
+    "vsbot":    { "planningSeconds": 0,     "mapPreset": "test32" },
+    "campaign": { "planningSeconds": 21600, "mapPreset": "world256" }
+  }
+}
