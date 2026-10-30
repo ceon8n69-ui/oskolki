@@ -2,7 +2,7 @@
 
 Telegram Mini App — стратегия на большой карте с **одновременным планированием ходов**: все игроки отдают приказы, затем сервер рассчитывает результат. Бот: [@oskolki_k_bot](https://t.me/oskolki_k_bot).
 
-## Статус — этап 1, техническая основа (v0.2)
+## Статус — этапы 1–2, серверная часть (v0.3)
 
 Готово и покрыто тестами:
 
@@ -13,6 +13,8 @@ Telegram Mini App — стратегия на большой карте с **о�
 - **Клиентский SDK** (`src/client-sdk`) — сеть, переподключение, кеш чанков, приказы с повторами, шкала воспроизведения хода (×1/×2, пропуск, уменьшенное движение).
 - **Бот-противник** (`src/ai`) — видит только то же, что игрок.
 - **Отладочный клиент** (`web/`) — вид сверху без графики, чтобы проверять партию целиком.
+
+**Этап 2 (большой мир):** кампания 256×256 до 32 игроков, генерация в отдельном потоке с выравниванием стартов, долгие маршруты на несколько ходов (с остановкой при угрозе), строительство дорог, мини-карта, сжатые снимки и кеш состояния. Замеры — [docs/LOAD_TEST.md](docs/LOAD_TEST.md).
 
 Графика (low-poly изометрия, модели, анимации) — отдельная задача: контракт в [docs/RENDERER_CONTRACT.md](docs/RENDERER_CONTRACT.md). Старый одиночный прототип 0.1 лежит в `legacy/` для справки.
 
@@ -32,6 +34,7 @@ DEV_AUTH=1 npm run build && DEV_AUTH=1 npm start   # http://localhost:3000, вх
 npm run check            # типы, границы модулей, все тесты (нужна БД oskolki_test)
 npm run worldgen -- --preset test32 --seed demo --ascii
 npm run bench -- --preset world256 --units 2000      # нагрузка расчёта хода
+npm run load-test -- --turns 5 --units 2000          # полный цикл с PostgreSQL
 ```
 
 `DATABASE_URL_TEST` задаёт тестовую БД (по умолчанию `postgres://oskolki:oskolki@localhost:5432/oskolki_test`; тесты пересоздают её схему).
@@ -66,12 +69,14 @@ test/                    тесты правил, генератора и сер
 | Метод | Путь | Назначение |
 |---|---|---|
 | POST | `/api/auth/telegram` | `{initData}` → токен сессии |
-| GET/POST | `/api/matches` | мои партии / создать (`quick`, `async`, `vsbot`) |
+| GET/POST | `/api/matches` | мои партии / создать (`quick`, `async`, `vsbot`, `campaign`) |
+| POST | `/api/matches/:id/start` | старт создателем (от 2 игроков) |
 | POST | `/api/matches/join` | `{inviteCode}` |
 | GET | `/api/matches/:id/state` | представление игрока, его приказы, резерв |
 | GET | `/api/matches/:id/chunks?list=0,0;1,0` | местность с учётом тумана |
 | GET | `/api/matches/:id/events?turn=N` | видимые игроку события хода |
-| POST/DELETE | `/api/matches/:id/orders` | приказ `{turn, order, idempotencyKey, baseVersion?}` / отмена |
+| GET | `/api/matches/:id/minimap` | исследованная местность, города, видимые отряды |
+| POST/DELETE | `/api/matches/:id/orders` | приказ `{turn, order, idempotencyKey, baseVersion?}` / отмена. Режимы: `move` (+`longRoute`, `stopOnThreat`), `attack`, `hold`, `build` (`road`) |
 | POST | `/api/matches/:id/ready` | готовность |
 | GET/POST | `/api/matches/:id/preview/moves`, `/preview/attack` | подсветка и прогноз боя |
 | WS | `/ws?token=…` | `subscribe` → `turn_resolved`, `match`, `ready_changed` |

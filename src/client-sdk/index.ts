@@ -83,11 +83,14 @@ export class OskolkiClient {
   listMatches() {
     return this.request<{ matches: MatchInfo[] }>('GET', '/api/matches').then(r => r.matches);
   }
-  createMatch(preset: 'quick' | 'async' | 'vsbot') {
+  createMatch(preset: 'quick' | 'async' | 'vsbot' | 'campaign') {
     return this.request<MatchInfo>('POST', '/api/matches', { preset });
   }
   joinMatch(inviteCode: string) {
     return this.request<MatchInfo>('POST', '/api/matches/join', { inviteCode });
+  }
+  startMatch(matchId: string) {
+    return this.request<MatchInfo>('POST', `/api/matches/${matchId}/start`);
   }
   matchDetails(matchId: string) {
     return this.request<MatchInfo & { inviteLink: string }>('GET', `/api/matches/${matchId}`);
@@ -173,6 +176,21 @@ export class OskolkiClient {
 
   move(unitId: string, path: Coord[]) {
     return this.submitOrder({ kind: 'unit', unitId, mode: 'move', path });
+  }
+  /** Маршрут на несколько ходов (только по исследованным клеткам). */
+  longRoute(unitId: string, path: Coord[], stopOnThreat = true) {
+    return this.submitOrder({ kind: 'unit', unitId, mode: 'move', path, longRoute: true, stopOnThreat });
+  }
+  buildRoad(unitId: string) {
+    return this.submitOrder({ kind: 'unit', unitId, mode: 'build', build: 'road', path: [] });
+  }
+  /** Мини-карта: исследованная местность (255 — неизвестно), города, видимые отряды. */
+  async minimap() {
+    const r = await this.request<{ width: number; height: number; turn: number; terrain: string; cities: { x: number; y: number; owner: string | null; isCapital: boolean }[]; units: { x: number; y: number; owner: string }[] }>('GET', `/api/matches/${this.matchId}/minimap`);
+    const bin = atob(r.terrain);
+    const terrain = new Uint8Array(bin.length);
+    for (let i = 0; i < bin.length; i++) terrain[i] = bin.charCodeAt(i);
+    return { ...r, terrain };
   }
   attack(unitId: string, targetUnitId: string, path: Coord[] = []) {
     return this.submitOrder({ kind: 'unit', unitId, mode: 'attack', path, targetUnitId });

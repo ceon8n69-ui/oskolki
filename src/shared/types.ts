@@ -52,7 +52,14 @@ export interface MapData {
   features: Uint8Array; // width*height, маска Feature
 }
 
-export type OrderMode = 'move' | 'attack' | 'hold';
+export type OrderMode = 'move' | 'attack' | 'hold' | 'build';
+
+/** Долгий маршрут: продолжается в следующих ходах без новых приказов. */
+export interface UnitRoute {
+  path: Coord[]; // оставшиеся шаги
+  stopOnThreat: boolean;
+  orderedTurn: number;
+}
 
 export interface UnitState {
   id: UnitId;
@@ -66,6 +73,7 @@ export interface UnitState {
   statuses: StatusEffect[];
   countersUsed: number;
   createdTurn: number;
+  route?: UnitRoute | null;
 }
 
 export interface StatusEffect {
@@ -157,6 +165,12 @@ export interface UnitOrder {
   path: Coord[]; // шаги без стартовой клетки; для hold пусто
   targetUnitId?: UnitId; // для attack
   targetTile?: Coord; // для attack — клетка, по которой отдан приказ (для журнала)
+  /** move: путь может быть длиннее бюджета хода — остаток продолжается в следующих ходах. */
+  longRoute?: boolean;
+  /** Для долгого маршрута: остановиться, если рядом замечен противник (по умолчанию true). */
+  stopOnThreat?: boolean;
+  /** build: что строить на текущей клетке. */
+  build?: 'road';
 }
 
 export interface RecruitOrder {
@@ -209,7 +223,13 @@ export type TurnEvent =
   | { t: 'production_blocked'; cityId: CityId; owner: PlayerId; reason: string }
   | { t: 'research_completed'; playerId: PlayerId; techId: string }
   | { t: 'income'; playerId: PlayerId; gold: number; upkeep: number; knowledge: number; deficit: boolean }
-  | { t: 'player_eliminated'; playerId: PlayerId };
+  | { t: 'player_eliminated'; playerId: PlayerId }
+  | { t: 'route_continued'; unitId: UnitId; owner: PlayerId; remaining: number }
+  | { t: 'route_paused'; unitId: UnitId; owner: PlayerId; at: Coord; reason: 'threat' | 'blocked' | 'invalid' }
+  | { t: 'route_completed'; unitId: UnitId; owner: PlayerId; at: Coord }
+  | { t: 'build_started'; unitId: UnitId; owner: PlayerId; at: Coord; build: 'road'; goldSpent: number }
+  | { t: 'road_built'; at: Coord; by: PlayerId }
+  | { t: 'build_failed'; unitId: UnitId; owner: PlayerId; at: Coord; reason: string };
 
 /** Событие с видимостью: список игроков, которым его можно показать. */
 export interface StoredEvent {

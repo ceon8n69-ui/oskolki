@@ -9,6 +9,7 @@ export function idCompare(a: string, b: string): number {
 
 export function canonicalize(state: GameState): GameState {
   state.units.sort((a, b) => idCompare(a.id, b.id));
+  for (const u of state.units) if (u.route === undefined) u.route = null;
   state.cities.sort((a, b) => idCompare(a.id, b.id));
   for (const p of state.players) p.researched.sort();
   return state;

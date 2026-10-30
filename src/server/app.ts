@@ -11,7 +11,7 @@ import { PROTOCOL_VERSION } from '../shared/protocol.ts';
 import type { ServerMessage } from '../shared/protocol.ts';
 import { moveOptions, previewAttack } from '../engine/preview.ts';
 import { computeVision } from '../engine/vision.ts';
-import { chunkView } from '../engine/view.ts';
+import { chunkView, minimapView } from '../engine/view.ts';
 import { asciiMap, generateWorld } from '../worldgen/generate.ts';
 import type { TelegramBot } from '../bot/telegram.ts';
 import { AuthError, signSession, verifyInitData, verifySession } from './auth.ts';
@@ -19,7 +19,7 @@ import type { ServerConfig } from './config.ts';
 import type { Db } from './db/pool.ts';
 import { GameError, sanitizeOrder } from './game.ts';
 import type { GameService, TurnResolvedInfo } from './game.ts';
-import { loadState } from './store.ts';
+import { loadStateCached } from './store.ts';
 
 const WEB_DIR = fileURLToPath(new URL('../../web/dist/', import.meta.url));
 const SESSION_TTL = 7 * 24 * 3600;
@@ -111,7 +111,7 @@ export async function buildApp(deps: { cfg: ServerConfig; db: Db; game: GameServ
   app.get('/api/matches/:id/chunks', async (req: FastifyRequest<{ Params: { id: string }; Querystring: { list?: string } }>) => {
     const uid = auth(req);
     const pid = await game.playerIdFor(req.params.id, uid);
-    const state = await loadState(db, req.params.id);
+    const state = await loadStateCached(db, req.params.id);
     const v = computeVision(b, state, pid);
     const maxCx = Math.ceil(state.map.width / state.map.chunkSize);
     const maxCy = Math.ceil(state.map.height / state.map.chunkSize);
@@ -120,6 +120,13 @@ export async function buildApp(deps: { cfg: ServerConfig; db: Db; game: GameServ
       .filter(([cx, cy]) => Number.isInteger(cx) && Number.isInteger(cy) && cx >= 0 && cy >= 0 && cx < maxCx && cy < maxCy)
       .map(([cx, cy]) => chunkView(state, pid, cx, cy, v));
     return { turn: state.turn, chunks };
+  });
+
+  app.get('/api/matches/:id/minimap', async (req: FastifyRequest<{ Params: { id: string } }>) => {
+    const pid = await game.playerIdFor(req.params.id, auth(req));
+    const state = await loadStateCached(db, req.params.id);
+    const mm = minimapView(b, state, pid, computeVision(b, state, pid));
+    return { ...mm, turn: state.turn, terrain: Buffer.from(mm.terrain).toString('base64') };
   });
 
   app.get('/api/matches/:id/events', async (req: FastifyRequest<{ Params: { id: string }; Querystring: { turn?: string } }>) => {
@@ -140,13 +147,13 @@ export async function buildApp(deps: { cfg: ServerConfig; db: Db; game: GameServ
 
   app.get('/api/matches/:id/preview/moves', async (req: FastifyRequest<{ Params: { id: string }; Querystring: { unitId?: string } }>) => {
     const pid = await game.playerIdFor(req.params.id, auth(req));
-    const state = await loadState(db, req.params.id);
+    const state = await loadStateCached(db, req.params.id);
     return { tiles: moveOptions(b, state, pid, String(req.query.unitId ?? ''), computeVision(b, state, pid)) };
   });
 
   app.post('/api/matches/:id/preview/attack', async (req: FastifyRequest<{ Params: { id: string }; Body: any }>) => {
     const pid = await game.playerIdFor(req.params.id, auth(req));
-    const state = await loadState(db, req.params.id);
+    const state = await loadStateCached(db, req.params.id);
     const body = req.body as any;
     const o = sanitizeOrder({ kind: "unit", mode: "attack", unitId: body?.unitId, path: body?.path, targetUnitId: body?.targetUnitId });
     if (o.kind !== 'unit') throw new GameError('bad_order');

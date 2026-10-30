@@ -5,7 +5,7 @@
     "presets": {
       "test32": { "width": 32, "height": 32, "players": 2, "neutralCities": 4, "minCapitalDistance": 14 },
       "small64": { "width": 64, "height": 64, "players": 4, "neutralCities": 12, "minCapitalDistance": 22 },
-      "world256": { "width": 256, "height": 256, "players": 32, "neutralCities": 140, "minCapitalDistance": 26 }
+      "world256": { "width": 256, "height": 256, "players": 32, "neutralCities": 140, "minCapitalDistance": 22 }
     }
   },
   "terrain": {
@@ -53,6 +53,8 @@
   "capture": {
     "holdTurns": 1
   },
+  "routes": { "threatRadius": 3, "maxLength": 160 },
+  "roads": { "goldCost": 3, "builders": ["infantry", "spearman"], "territoryRadius": 3 },
   "techs": {
     "spearcraft": { "name": "Древковое оружие", "cost": 6,  "requires": [], "unlocksUnits": ["spearman"], "modifiers": {} },
     "archery":    { "name": "Стрелковое дело",  "cost": 8,  "requires": [], "unlocksUnits": ["archer"],   "modifiers": {} },
@@ -65,6 +67,7 @@
   "turnPresets": {
     "quick":  { "planningSeconds": 90,    "mapPreset": "test32" },
     "async":  { "planningSeconds": 21600, "mapPreset": "small64" },
-    "vsbot":  { "planningSeconds": 0,     "mapPreset": "test32" }
+    "vsbot":  { "planningSeconds": 0,     "mapPreset": "test32" },
+    "campaign": { "planningSeconds": 21600, "mapPreset": "world256" }
   }
 }

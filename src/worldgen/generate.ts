@@ -7,7 +7,7 @@ import { dijkstra } from '../engine/path.ts';
 import { createRng, hash32 } from '../engine/rng.ts';
 import { fbm } from './noise.ts';
 
-export const GENERATOR_VERSION = 'worldgen-1.0.0';
+export const GENERATOR_VERSION = 'worldgen-1.1.0';
 
 export interface WorldSpec extends MapPreset {
   seed: string;
@@ -179,6 +179,11 @@ function generateAttempt(b: Balance, spec: WorldSpec, attempt: number): Generate
     }
   }
 
+  // --- выравнивание стартовых условий ---
+  // Доступная за 3 хода пехоты суша у каждой столицы должна быть сопоставимой: у бедных стартов
+  // ближайшие лес и холмы превращаются в равнину (как «стартовый бонус» в 4X-генераторах).
+  equalizeStarts(b, map, capitals, rng);
+
   // --- нейтральные города и объекты ---
   const cities: Coord[] = [...capitals];
   const neutralCities: Coord[] = [];
@@ -249,6 +254,37 @@ function generateAttempt(b: Balance, spec: WorldSpec, attempt: number): Generate
 
   const report = validateWorld(b, map, capitals, neutralCities, spec, { comp, compSizes, main, effectiveSeed, attempt });
   return { map, capitals, neutralCities, report };
+}
+
+export function startAccess(b: Balance, map: MapData, c: Coord): number {
+  const limit = 3 * b.units.infantry.move;
+  const { cost } = dijkstra(b, map, c, { budget: limit });
+  let n = 0;
+  for (let i = 0; i < cost.length; i++) if (cost[i] > 0 && cost[i] <= limit) n++;
+  return n;
+}
+
+function equalizeStarts(b: Balance, map: MapData, capitals: Coord[], rng: () => number): void {
+  if (capitals.length < 2) return;
+  const access = capitals.map(c => startAccess(b, map, c));
+  const target = Math.max(...access) * 0.8;
+  capitals.forEach((c, k) => {
+    if (access[k] >= target) return;
+    // Клетки вокруг столицы по возрастанию расстояния; порядок внутри кольца — детерминированный.
+    const ring: { x: number; y: number; d: number; r: number }[] = [];
+    for (let y = c.y - 4; y <= c.y + 4; y++) for (let x = c.x - 4; x <= c.x + 4; x++) {
+      if (x < 0 || y < 0 || x >= map.width || y >= map.height) continue;
+      const t = map.terrain[idx(map, x, y)];
+      if (t === Terrain.Forest || t === Terrain.Hills) ring.push({ x, y, d: Math.max(Math.abs(x - c.x), Math.abs(y - c.y)), r: rng() });
+    }
+    ring.sort((a, b2) => a.d - b2.d || a.r - b2.r);
+    let i = 0;
+    while (access[k] < target && i < ring.length) {
+      // Превращаем по несколько клеток за раз, затем пересчитываем доступ.
+      for (let j = 0; j < 4 && i < ring.length; j++, i++) map.terrain[idx(map, ring[i].x, ring[i].y)] = Terrain.Plains;
+      access[k] = startAccess(b, map, c);
+    }
+  });
 }
 
 function closestCapital(capCosts: Float64Array[], i: number): number {

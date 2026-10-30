@@ -36,6 +36,13 @@ client.on('turnResolved', ({ events, before, after }) => ...); // новый х�
 - `view.players[].color` — цвет игрока.
 - `state.orders` — уже отданные приказы: путь (`path`), режим (`move | attack | hold`), цель (`targetUnitId`). Показывать маршрут и цель.
 
+## Этап 2: маршруты, дороги, мини-карта
+
+- `client.longRoute(unitId, path, stopOnThreat)` — путь длиннее хода (только по исследованным клеткам). У своих отрядов `unit.route.path` — оставшиеся шаги: рисовать пунктиром.
+- `client.buildRoad(unitId)` — дорога на клетке отряда; появляется в `features` (бит 1) после хода. Дороги соединяются визуально между соседними клетками с битом 1.
+- `client.minimap()` — `terrain` (Uint8Array, 255 — неизвестно), `cities`, `units` для мини-карты; обновлять после каждого хода.
+- Новые шаги шкалы: `build_start`, `road`, `route_paused`.
+
 ## Предпросмотр (для подсветки)
 
 - `client.previewMoves(unitId)` → клетки, куда можно дойти в этот ход, со стоимостью.
