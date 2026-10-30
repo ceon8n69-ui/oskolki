@@ -3,7 +3,8 @@ import type { Balance } from '../shared/balance.ts';
 import type { GameState, PlayerId } from '../shared/types.ts';
 import { Feature } from '../shared/types.ts';
 import { dist, idx, inBounds } from './grid.ts';
-import { commanderUnit, playerOf, techs } from './stats.ts';
+import { commanderUnit, playerOf, techs, traitsOf } from './stats.ts';
+import { linkedObelisks } from './world.ts';
 
 function stamp(grid: Uint8Array, state: GameState, cx: number, cy: number, r: number): void {
   for (let y = cy - r; y <= cy + r; y++) for (let x = cx - r; x <= cx + r; x++) if (inBounds(state.map, x, y)) grid[idx(state.map, x, y)] = 1;
@@ -16,7 +17,9 @@ export function cityBuildingEffect(b: Balance, city: { buildings: string[] }, ke
 }
 
 export function supplyRadiusOfCity(b: Balance, state: GameState, c: GameState['cities'][number]): number {
-  return (b.supply.cityRadius[c.level] ?? 3) + cityBuildingEffect(b, c, 'supplyRadius') + techs(b, state, c.owner ?? '').supplyRadius;
+  const owner = c.owner ?? '';
+  const r = (b.supply.cityRadius[c.level] ?? 3) + cityBuildingEffect(b, c, 'supplyRadius') + techs(b, state, owner).supplyRadius + (traitsOf(b, state, owner).supplyRadiusMod ?? 0);
+  return Math.max(1, r);
 }
 
 /** 1 — клетка в зоне снабжения игрока. */
@@ -28,6 +31,7 @@ export function computeSupply(b: Balance, state: GameState, playerId: PlayerId):
   const lvl = p?.commander?.directions?.logistics ?? 0;
   const cmd = commanderUnit(state, playerId);
   if (cmd && lvl > 0) stamp(grid, state, cmd.x, cmd.y, 2 + lvl);
+  for (const o of linkedObelisks(b, state, playerId)) stamp(grid, state, o.x, o.y, b.obelisks.supplyRadius);
   // «Имперские тракты»: дороги в пределах 8 клеток от своего города тоже снабжаются.
   if (techs(b, state, playerId).roadSupply) {
     for (let i = 0; i < grid.length; i++) {

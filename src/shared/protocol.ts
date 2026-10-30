@@ -18,7 +18,26 @@ export interface ViewUnit {
   perks?: string[]; // только свои
   pendingPerks?: number; // только свои: ждёт выбора улучшения
   supplyOut?: number; // только свои
+  carriedBy?: UnitId; // только свои: отряд на борту транспорта (координаты = транспорт)
+  cargo?: number; // транспорт: число отрядов на борту (видно всем, кто видит транспорт)
   stale: false;
+}
+
+export interface ViewStructure {
+  id: string;
+  kind: 'obelisk';
+  owner: PlayerId;
+  x: number;
+  y: number;
+  linked: boolean | null; // свои — подключён ли к сети; чужие — null (неизвестно)
+}
+
+export interface ViewWorldEvent {
+  id: string;
+  name: string;
+  description: string;
+  startTurn: number;
+  endTurn: number;
 }
 
 export interface StaleUnit {
@@ -77,6 +96,10 @@ export interface PlayerView {
   cities: ViewCity[];
   diplomacy: Treaty[];
   mode: MatchMode;
+  structures: ViewStructure[];
+  worldEvents: ViewWorldEvent[];
+  /** Индексы клеток с разграбленными руинами среди исследованных игроком. */
+  lootedRuins: number[];
 }
 
 export interface ChunkView {

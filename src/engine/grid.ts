@@ -48,9 +48,12 @@ export interface TerrainOverrides {
   mountain?: number;
   shallow?: number;
   deep?: number;
+  /** Корабль: проходима только вода (стоимость 1), суша и мосты закрыты. */
+  naval?: boolean;
 }
 
 function baseCost(b: Balance, t: TerrainCode, pr?: TerrainOverrides): number | null {
+  if (pr?.naval) return t <= Terrain.ShallowWater ? 1 : null;
   if (pr) {
     if (t === Terrain.Forest && pr.forest !== undefined) return pr.forest;
     if (t === Terrain.Hills && pr.hills !== undefined) return pr.hills;
@@ -67,6 +70,7 @@ function baseCost(b: Balance, t: TerrainCode, pr?: TerrainOverrides): number | n
  */
 export function landMoveCost(b: Balance, map: MapData, from: Coord, to: Coord, pr?: TerrainOverrides): number | null {
   if (!inBounds(map, to.x, to.y)) return null;
+  if (pr?.naval) return baseCost(b, terrainAt(map, to.x, to.y), pr);
   const f = featuresAt(map, to.x, to.y);
   if (f & Feature.Bridge) return b.bridgeMoveCost;
   const base = baseCost(b, terrainAt(map, to.x, to.y), pr);
@@ -79,6 +83,7 @@ export function landMoveCost(b: Balance, map: MapData, from: Coord, to: Coord, p
 
 export function isLandPassable(b: Balance, map: MapData, x: number, y: number, pr?: TerrainOverrides): boolean {
   if (!inBounds(map, x, y)) return false;
+  if (pr?.naval) return baseCost(b, terrainAt(map, x, y), pr) !== null;
   if (featuresAt(map, x, y) & Feature.Bridge) return true;
   return baseCost(b, terrainAt(map, x, y), pr) !== null;
 }

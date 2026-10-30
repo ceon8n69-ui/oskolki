@@ -38,6 +38,29 @@ export interface TechSummary {
   fortBonus: number;
   deepWater: boolean;
   coastalGold: number;
+  foodPerCity: number;
+  lootBonus: number;
+  plunderBonus: number;
+  frontLimitBonus: number;
+  scorchGold: number;
+  resonanceBonus: number;
+  obeliskLink: number;
+  ruinsKnowledge: number;
+  obeliskField: number;
+}
+
+/** Сумма действия активных мировых событий по ключу (0 — нет событий). */
+export function worldEffect(b: Balance, state: GameState, key: keyof Balance['worldEvents']['list'][string]['effects']): number {
+  let s = 0;
+  for (const e of state.world?.events ?? []) {
+    if (e.startTurn > state.turn || state.turn > e.endTurn) continue;
+    s += b.worldEvents.list[e.id]?.effects[key] ?? 0;
+  }
+  return s;
+}
+
+export function worldHas(b: Balance, state: GameState, key: keyof Balance['worldEvents']['list'][string]['effects']): boolean {
+  return (state.world?.events ?? []).some(e => e.startTurn <= state.turn && state.turn <= e.endTurn && b.worldEvents.list[e.id]?.effects[key] !== undefined);
 }
 
 const summaryCache = new WeakMap<PlayerState, { key: string; s: TechSummary }>();
@@ -53,7 +76,8 @@ export function techs(b: Balance, state: GameState, owner: PlayerId): TechSummar
     attackBonus: 0, cityDefenseBonus: 0, goldPerCity: 0, rangeBonus: {}, moveBonus: {}, siegeAttackAfterMove: false,
     attackBonusClass: {}, xpMul: 1, roadCostMul: 1, supplyRadius: 0, healBonus: 0, visionBonusClass: {}, cityVisionBonus: 0,
     roadSupply: false, formationBonus: 0, plantForestAny: false, ambushBonus: 0, mountainMoveCost: null, fortBonus: 0,
-    deepWater: false, coastalGold: 0,
+    deepWater: false, coastalGold: 0, foodPerCity: 0, lootBonus: 0, plunderBonus: 0, frontLimitBonus: 0, scorchGold: 0,
+    resonanceBonus: 0, obeliskLink: 0, ruinsKnowledge: 0, obeliskField: 0,
   };
   const addMap = (dst: Record<string, number>, src?: Record<string, number>) => {
     for (const [k, v] of Object.entries(src ?? {})) dst[k] = (dst[k] ?? 0) + v;
@@ -81,6 +105,15 @@ export function techs(b: Balance, state: GameState, owner: PlayerId): TechSummar
     s.fortBonus += m.fortBonus ?? 0;
     s.deepWater ||= !!m.deepWater;
     s.coastalGold += m.coastalGold ?? 0;
+    s.foodPerCity += m.foodPerCity ?? 0;
+    s.lootBonus += m.lootBonus ?? 0;
+    s.plunderBonus += m.plunderBonus ?? 0;
+    s.frontLimitBonus += m.frontLimitBonus ?? 0;
+    s.scorchGold += m.scorchGold ?? 0;
+    s.resonanceBonus += m.resonanceBonus ?? 0;
+    s.obeliskLink += m.obeliskLink ?? 0;
+    s.ruinsKnowledge += m.ruinsKnowledge ?? 0;
+    s.obeliskField += m.obeliskField ?? 0;
   }
   if (p) summaryCache.set(p, { key, s });
   return s;
@@ -114,7 +147,8 @@ export function rangeOf(b: Balance, state: GameState, u: Pick<UnitState, 'type' 
 }
 
 export function visionOf(b: Balance, state: GameState, u: Pick<UnitState, 'type' | 'owner'>): number {
-  return b.units[u.type].vision + (techs(b, state, u.owner).visionBonusClass[unitClass(b, u.type)] ?? 0);
+  const v = b.units[u.type].vision + (techs(b, state, u.owner).visionBonusClass[unitClass(b, u.type)] ?? 0);
+  return Math.max(1, v + worldEffect(b, state, 'vision'));
 }
 
 export function canAttackAfterMove(b: Balance, state: GameState, u: Pick<UnitState, 'type' | 'owner'>): boolean {
@@ -122,15 +156,22 @@ export function canAttackAfterMove(b: Balance, state: GameState, u: Pick<UnitSta
   return techs(b, state, u.owner).siegeAttackAfterMove;
 }
 
-/** Бюджет движения на ход: база + технологии (+1 от «Ускоренного марша», если передан набор). */
-export function moveOf(b: Balance, state: GameState, u: Pick<UnitState, 'type' | 'owner' | 'id'>, forcedMarch?: Set<string>): number {
-  return b.units[u.type].move + (techs(b, state, u.owner).moveBonus[unitClass(b, u.type)] ?? 0) + (forcedMarch?.has(u.id) ? 1 : 0);
+/**
+ * Бюджет движения на ход: база + технологии (+1 от «Ускоренного марша», если передан набор),
+ * + натиск Пепельных орд, ± морские мировые события для флота.
+ */
+export function moveOf(b: Balance, state: GameState, u: Pick<UnitState, 'type' | 'owner' | 'id'> & { statuses?: UnitState['statuses'] }, forcedMarch?: Set<string>): number {
+  let m = b.units[u.type].move + (techs(b, state, u.owner).moveBonus[unitClass(b, u.type)] ?? 0) + (forcedMarch?.has(u.id) ? 1 : 0);
+  if (u.statuses?.some(s => s.id === 'momentum')) m += traitsOf(b, state, u.owner).momentumMove ?? 0;
+  if (hasAbility(b, u.type, 'naval')) m = Math.max(1, m + worldEffect(b, state, 'navalMove'));
+  return m;
 }
 
 // ---------- Профиль передвижения ----------
 
 /** Особые стоимости клеток для конкретного отряда (народ, способности, улучшения). */
 export interface MoveProfile {
+  naval?: boolean;
   forest?: number;
   hills?: number;
   mountain?: number;
@@ -141,11 +182,13 @@ export interface MoveProfile {
 export function moveProfile(b: Balance, state: GameState, u: Pick<UnitState, 'type' | 'owner'> & { perks?: string[] }): MoveProfile {
   const tr = traitsOf(b, state, u.owner);
   const tc = techs(b, state, u.owner);
+  if (hasAbility(b, u.type, 'naval')) return { naval: true };
   const p: MoveProfile = {};
   if (tr.forestCost !== undefined || hasAbility(b, u.type, 'forest_stride') || u.perks?.includes('forest_move')) p.forest = Math.min(tr.forestCost ?? 1, 1);
   if (tr.hillsCost !== undefined) p.hills = tr.hillsCost;
   if (tc.mountainMoveCost !== null) p.mountain = tc.mountainMoveCost; // «Тоннели» — технология Горных кланов
-  if (tr.shallowWater || hasAbility(b, u.type, 'amphibious')) p.shallow = 1;
+  if (hasAbility(b, u.type, 'amphibious')) p.shallow = 1;
+  else if (tr.shallowWater) p.shallow = tr.shallowCost ?? 1;
   if (hasAbility(b, u.type, 'amphibious') && tc.deepWater) p.deep = 2;
   return p;
 }

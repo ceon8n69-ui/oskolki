@@ -1,6 +1,7 @@
 // Каноническая форма состояния: порядок массивов не зависит от того, откуда состояние загружено
 // (из памяти, из снимка или из таблиц PostgreSQL). Нужна для воспроизводимости и хэшей.
 import type { GameState } from '../shared/types.ts';
+import { emptyWorld } from '../shared/types.ts';
 
 /** Сравнение идентификаторов вида u2 < u10. */
 export function idCompare(a: string, b: string): number {
@@ -9,11 +10,18 @@ export function idCompare(a: string, b: string): number {
 
 export function canonicalize(state: GameState): GameState {
   state.units.sort((a, b) => idCompare(a.id, b.id));
-  for (const u of state.units) if (u.route === undefined) u.route = null;
+  for (const u of state.units) {
+    if (u.route === undefined) u.route = null;
+    if (!u.carriedBy) delete u.carriedBy;
+  }
   state.cities.sort((a, b) => idCompare(a.id, b.id));
   for (const p of state.players) p.researched.sort();
   state.diplomacy ??= [];
   state.diplomacy.sort((x, y) => (x.a + '|' + x.b < y.a + '|' + y.b ? -1 : 1));
+  state.world ??= emptyWorld();
+  state.world.structures.sort((a, b) => idCompare(a.id, b.id));
+  state.world.lootedRuins.sort((a, b) => a - b);
+  state.world.events.sort((a, b) => a.startTurn - b.startTurn || (a.id < b.id ? -1 : 1));
   return state;
 }
 

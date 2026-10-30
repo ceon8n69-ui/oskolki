@@ -352,7 +352,7 @@ export class GameService extends EventEmitter {
       }
       const { state: next, events } = resolveTurn(this.b, state, orders);
       await saveState(tx, next);
-      const roads = events.flatMap(e => (e.event.t === 'road_built' || e.event.t === 'fort_built' || e.event.t === 'forest_planted' ? [e.event.at] : []));
+      const roads = events.flatMap(e => (e.event.t === 'road_built' || e.event.t === 'fort_built' || e.event.t === 'forest_planted' || e.event.t === 'scorched' ? [e.event.at] : []));
       if (roads.length) await saveTileChanges(tx, matchId, next.map, roads, m.turn);
       resolvedState = next;
       if (events.length) {

@@ -1,6 +1,6 @@
 import { BALANCE } from '../src/shared/balance.ts';
 import type { CityState, GameState, SubmittedOrder, UnitOrder, UnitState, Order } from '../src/shared/types.ts';
-import { Terrain } from '../src/shared/types.ts';
+import { Terrain, emptyWorld } from '../src/shared/types.ts';
 import { computeAllVision, updateExploredAndIntel } from '../src/engine/vision.ts';
 import { RULES_VERSION } from '../src/engine/resolve.ts';
 import { newCity, newPlayer, newUnit } from '../src/engine/factory.ts';
@@ -34,7 +34,7 @@ export function flatState(opts: {
     matchId: 'test', turn: 1, balanceVersion: b.version, rulesVersion: RULES_VERSION,
     map: { width: w, height: h, chunkSize: 16, seed: 'test-seed', generatorVersion: 'test', terrain, features: new Uint8Array(w * h) },
     players, units: [], cities: [], explored: {}, intel: {}, nextIds: { unit: 1000 },
-    diplomacy: [], mode: defaultMode(),
+    diplomacy: [], mode: defaultMode(), world: emptyWorld(),
   };
   let n = 1;
   for (const u of opts.units ?? []) {

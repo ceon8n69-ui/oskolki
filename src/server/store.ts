@@ -2,6 +2,7 @@
 import { createHash } from 'node:crypto';
 import { deflateRawSync, inflateRawSync } from 'node:zlib';
 import type { GameState, MapData, PlayerIntel, PlayerState, UnitState, CityState } from '../shared/types.ts';
+import { emptyWorld } from '../shared/types.ts';
 import type { Tx, Db } from './db/pool.ts';
 import { canonicalize, stableStringify } from '../engine/canonical.ts';
 import { defaultMode } from '../engine/diplomacy.ts';
@@ -203,6 +204,7 @@ export async function loadState(q: Q, matchId: string): Promise<GameState> {
   const units: UnitState[] = us.rows.map(r => ({
     id: r.id, owner: r.owner, type: r.type, x: r.x, y: r.y, hp: r.hp, xp: r.xp, rank: r.rank, statuses: r.statuses, countersUsed: 0, createdTurn: r.created_turn, route: r.route ?? null,
     maxHp: r.max_hp ?? r.hp, perks: r.perks ?? [], pendingPerks: r.pending_perks ?? 0, supplyOut: r.supply_out ?? 0,
+    ...(r.carried_by ? { carriedBy: r.carried_by } : {}),
   }));
   // Сортировка по числовой части id: порядок не влияет на расчёт, но упрощает чтение.
   const cities: CityState[] = cs.rows.map(r => ({
@@ -221,6 +223,7 @@ export async function loadState(q: Q, matchId: string): Promise<GameState> {
     players, units, cities, explored, intel, nextIds: { unit: m.next_unit_id },
     diplomacy: ds.rows.map(r => ({ a: r.a, b: r.b, status: r.status, since: r.since_turn, pending: r.pending ?? null, proposal: r.proposal ?? null })),
     mode: m.mode ?? defaultMode(),
+    world: m.world ?? emptyWorld(),
   });
 }
 
@@ -243,13 +246,13 @@ export async function saveState(tx: Tx, state: GameState): Promise<void> {
   if (state.units.length) {
     const u = state.units;
     await tx.query(
-      `INSERT INTO units (match_id, id, owner, type, x, y, hp, xp, rank, statuses, created_turn, route, max_hp, perks, pending_perks, supply_out)
+      `INSERT INTO units (match_id, id, owner, type, x, y, hp, xp, rank, statuses, created_turn, route, max_hp, perks, pending_perks, supply_out, carried_by)
        SELECT $1, u.id, u.owner, u.type, u.x, u.y, u.hp, u.xp, u.rank, u.statuses, u.created_turn, u.route, u.max_hp,
-              ARRAY(SELECT jsonb_array_elements_text(u.perks)), u.pending_perks, u.supply_out
-       FROM unnest($2::text[], $3::text[], $4::text[], $5::int[], $6::int[], $7::int[], $8::int[], $9::int[], $10::jsonb[], $11::int[], $12::jsonb[], $13::int[], $14::jsonb[], $15::int[], $16::int[])
-         AS u(id, owner, type, x, y, hp, xp, rank, statuses, created_turn, route, max_hp, perks, pending_perks, supply_out)`,
+              ARRAY(SELECT jsonb_array_elements_text(u.perks)), u.pending_perks, u.supply_out, u.carried_by
+       FROM unnest($2::text[], $3::text[], $4::text[], $5::int[], $6::int[], $7::int[], $8::int[], $9::int[], $10::jsonb[], $11::int[], $12::jsonb[], $13::int[], $14::jsonb[], $15::int[], $16::int[], $17::text[])
+         AS u(id, owner, type, x, y, hp, xp, rank, statuses, created_turn, route, max_hp, perks, pending_perks, supply_out, carried_by)`,
       [id, u.map(x => x.id), u.map(x => x.owner), u.map(x => x.type), u.map(x => x.x), u.map(x => x.y), u.map(x => x.hp), u.map(x => x.xp), u.map(x => x.rank), u.map(x => JSON.stringify(x.statuses)), u.map(x => x.createdTurn), u.map(x => (x.route ? JSON.stringify(x.route) : null)),
-        u.map(x => x.maxHp), u.map(x => JSON.stringify(x.perks)), u.map(x => x.pendingPerks), u.map(x => x.supplyOut)],
+        u.map(x => x.maxHp), u.map(x => JSON.stringify(x.perks)), u.map(x => x.pendingPerks), u.map(x => x.supplyOut), u.map(x => x.carriedBy ?? null)],
     );
   }
   for (const c of state.cities) {
@@ -277,5 +280,5 @@ export async function saveState(tx: Tx, state: GameState): Promise<void> {
       [id, t.a, t.b, t.status, t.since, t.pending?.effectiveTurn ?? null, t.pending ? JSON.stringify(t.pending) : null, t.proposal ? JSON.stringify(t.proposal) : null],
     );
   }
-  await tx.query('UPDATE matches SET next_unit_id=$2, mode=$3, updated_at=now() WHERE id=$1', [id, state.nextIds.unit, JSON.stringify(state.mode)]);
+  await tx.query('UPDATE matches SET next_unit_id=$2, mode=$3, world=$4, updated_at=now() WHERE id=$1', [id, state.nextIds.unit, JSON.stringify(state.mode), JSON.stringify(state.world)]);
 }

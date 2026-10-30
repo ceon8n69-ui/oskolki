@@ -3,7 +3,7 @@
 import type {
   AttackPreview, ChunkView, MatchInfo, OrderRecord, Reserved, ServerMessage, StateResponse, SubmitOrderResponse,
 } from '../shared/protocol.ts';
-import type { Coord, Order, StoredEvent } from '../shared/types.ts';
+import type { BuildKind, Coord, Order, StoredEvent } from '../shared/types.ts';
 import { orderSubjectKey } from '../shared/types.ts';
 
 export * from './playback.ts';
@@ -194,8 +194,24 @@ export class OskolkiClient {
   buildRoad(unitId: string) {
     return this.submitOrder({ kind: 'unit', unitId, mode: 'build', build: 'road', path: [] });
   }
-  build(unitId: string, build: 'road' | 'fort' | 'forest') {
+  build(unitId: string, build: BuildKind) {
     return this.submitOrder({ kind: 'unit', unitId, mode: 'build', build, path: [] });
+  }
+  /** Пепельные орды: сжечь клетку под отрядом. */
+  scorch(unitId: string) {
+    return this.build(unitId, 'scorch');
+  }
+  /** Хранители руин: поставить обелиск на клетке отряда. */
+  obelisk(unitId: string) {
+    return this.build(unitId, 'obelisk');
+  }
+  /** Погрузка: путь до соседней с транспортом клетки + клетка транспорта (см. previewMoves: embark). */
+  embark(unitId: string, pathToShip: Coord[]) {
+    return this.move(unitId, pathToShip);
+  }
+  /** Высадка с транспорта на соседнюю сушу (один шаг, весь ход). */
+  disembark(unitId: string, to: Coord) {
+    return this.move(unitId, [to]);
   }
   /** Атака с отталкиванием (щитоносцы). */
   shieldBash(unitId: string, targetUnitId: string, path: Coord[] = []) {

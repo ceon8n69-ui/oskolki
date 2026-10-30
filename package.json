@@ -1,6 +1,6 @@
 {
   "name": "oskolki",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "private": true,
   "type": "module",
   "description": "Осколки королевств — Telegram Mini App, серверная стратегия с одновременными ходами",
@@ -18,7 +18,8 @@
     "check:boundaries": "node scripts/check-boundaries.ts",
     "check": "npm run typecheck && npm run check:boundaries && npm run test",
     "load-test": "node scripts/load-test-db.ts",
-    "docs": "node scripts/gen-rules-doc.ts"
+    "docs": "node scripts/gen-rules-doc.ts",
+    "simulate": "node scripts/simulate.ts"
   },
   "engines": {
     "node": ">=22.18"

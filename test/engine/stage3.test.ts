@@ -114,7 +114,7 @@ test('передвижение народов: лес, холмы, мелков�
   assert.equal(cost('m', Terrain.Forest), 2);
   assert.equal(cost('m', Terrain.Hills), 1);
   assert.equal(cost('f', Terrain.Hills), 2);
-  assert.equal(cost('t', Terrain.ShallowWater), 1);
+  assert.equal(cost('t', Terrain.ShallowWater), b.factions.tide.traits.shallowCost ?? 1);
   assert.equal(cost('f', Terrain.ShallowWater), null);
 });
 
