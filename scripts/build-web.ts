@@ -1,6 +1,7 @@
+import { createHash } from 'node:crypto';
 // Сборка отладочного клиента в web/dist.
 import { build } from 'esbuild';
-import { cp, mkdir, rm } from 'node:fs/promises';
+import { cp, mkdir, rm, readFile, writeFile } from 'node:fs/promises';
 
 const out = new URL('../web/dist/', import.meta.url).pathname;
 await rm(out, { recursive: true, force: true });
@@ -15,7 +16,9 @@ await build({
   outfile: out + 'main.js',
   logLevel: 'info',
 });
-await cp(new URL('../web/index.html', import.meta.url).pathname, out + 'index.html');
+const version = createHash('sha256').update(await readFile(out + 'main.js')).digest('hex').slice(0,12);
+const html = await readFile(new URL('../web/index.html', import.meta.url), 'utf8');
+await writeFile(out + 'index.html', html.replace('./main.js', './main.js?v=' + version));
 await cp(new URL('../web/debug.css', import.meta.url).pathname, out + 'debug.css');
 
 await cp(new URL('../web/art', import.meta.url).pathname, out + 'art', { recursive: true });

@@ -185,7 +185,7 @@ async function openMatch(id: string) {
 
 // ===================== игровой экран =====================
 
-let cam = { x: 16, y: 16, size: 28 };
+let cam = { x: 16, y: 16, size: 48 };
 let selected: string | null = null;
 let moveTiles: { x: number; y: number; cost: number; embark?: boolean; disembark?: boolean }[] = [];
 let sheet: 'none' | 'city' | 'research' | 'log' | 'commander' | 'diplomacy' = 'none';
