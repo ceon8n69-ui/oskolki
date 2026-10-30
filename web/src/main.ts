@@ -1,3 +1,4 @@
+import { loadLiveArt, drawLiveArt } from './live-art.ts';
 // Отладочный клиент этапа 1. Вид сверху, условные цвета — только для проверки правил, сети и шкалы событий.
 // Финальная изометрическая графика заменяет функции draw*/screenToTile, используя тот же OskolkiClient.
 import { BALANCE } from '../../src/shared/balance.ts';
@@ -45,6 +46,7 @@ const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;
 // ===================== вход и лобби =====================
 
 async function boot() {
+  void loadLiveArt();
   tg?.ready?.();
   tg?.expand?.();
   // Свайп по карте не должен сворачивать мини-приложение (Telegram Bot API 7.7+).
@@ -602,6 +604,11 @@ function frame(now: number) {
     const { sx, sy } = tileToScreen(x, y);
     ctx.fillStyle = TERRAIN_COLORS[t?.terrain ?? 255];
     ctx.fillRect(sx - S / 2, sy - S / 2, S - 1, S - 1);
+    if (t && t.terrain !== 255) {
+      if (t.features & 2) drawLiveArt(ctx, 'bridge', sx, sy, S);
+      else if (t.terrain === 3) drawLiveArt(ctx, 'tree', sx, sy, S);
+      else if (t.terrain === 5) drawLiveArt(ctx, 'mountain', sx, sy, S);
+    }
     if (supplyLayer && t && (client.chunk(Math.floor(x / st.view.map.chunkSize), Math.floor(y / st.view.map.chunkSize))?.supply ?? [])[(y % st.view.map.chunkSize) * st.view.map.chunkSize + (x % st.view.map.chunkSize)]) {
       ctx.fillStyle = '#5fbf7a55';
       ctx.fillRect(sx - S / 2, sy - S / 2, S - 1, S - 1);
@@ -630,6 +637,7 @@ function frame(now: number) {
   for (const c of st.view.cities) {
     const { sx, sy } = tileToScreen(c.x, c.y);
     const color = st.view.players.find(p => p.id === c.owner)?.color ?? '#bbb';
+    drawLiveArt(ctx, 'castle', sx, sy, S, c.visibleNow ? 1 : 0.4);
     ctx.strokeStyle = color;
     ctx.lineWidth = 3;
     ctx.strokeRect(sx - S / 2 + 2, sy - S / 2 + 2, S - 5, S - 5);
@@ -732,6 +740,15 @@ function frame(now: number) {
 
 function drawUnit(sx: number, sy: number, type: string, color: string, hp: number, sel: boolean, fort = false) {
   const S = cam.size;
+  if (drawLiveArt(ctx, type, sx, sy, S)) {
+    ctx.strokeStyle = sel ? '#f2c14e' : color; ctx.lineWidth = sel ? 3 : 2;
+    ctx.strokeRect(sx-S*.43, sy-S*.43, S*.86, S*.86);
+    ctx.fillStyle = color; ctx.fillRect(sx-S*.42,sy+S*.32,S*.84,Math.max(3,S*.1));
+    ctx.fillStyle = '#172737'; ctx.fillRect(sx+S*.16,sy-S*.46,S*.3,14);
+    ctx.font='bold 10px system-ui';ctx.textAlign='center';ctx.fillStyle='#fff';ctx.fillText(String(hp),sx+S*.31,sy-S*.46+11);
+    if(fort){ctx.strokeStyle='#fff';ctx.strokeRect(sx-S*.47,sy-S*.47,S*.94,S*.94);}
+    return;
+  }
   ctx.fillStyle = color;
   ctx.beginPath();
   ctx.arc(sx, sy, S * 0.34, 0, Math.PI * 2);

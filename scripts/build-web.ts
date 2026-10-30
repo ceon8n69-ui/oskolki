@@ -17,3 +17,5 @@ await build({
 });
 await cp(new URL('../web/index.html', import.meta.url).pathname, out + 'index.html');
 await cp(new URL('../web/debug.css', import.meta.url).pathname, out + 'debug.css');
+
+await cp(new URL('../web/art', import.meta.url).pathname, out + 'art', { recursive: true });
