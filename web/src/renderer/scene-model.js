@@ -16,7 +16,7 @@ export function sceneModel(state,tile,bounds){
   tiles.push({x,y,terrain:t.terrain,features:t.features,visible:t.visible,looted:(v.lootedRuins??[]).includes(y*v.map.width+x)});
  }
  const liveIds=new Set(v.units.map(u=>u.id));
- const units=[...v.units.filter(u=>!u.carriedBy).map(u=>({...u,...style(u.owner),opacity:1})),
+ const units=[...v.units.filter(u=>!u.carriedBy).map(u=>({...u,...style(u.owner),opacity:u.renderOpacity??1})),
  ...v.staleUnits.filter(u=>!liveIds.has(u.id)).map(u=>({...u,...style(u.owner),opacity:.35}))].filter(inside);
  const cities=v.cities.filter(inside).map(c=>({...c,...style(c.owner),opacity:c.visibleNow?1:.45}));
  const routes=[];
