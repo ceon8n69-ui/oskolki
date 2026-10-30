@@ -331,17 +331,24 @@ export class GameService extends EventEmitter {
       const takenOver = await this.applyBotTakeover(tx, m, state, active);
       const orders: SubmittedOrder[] = active.map(o => ({ id: o.id, playerId: o.playerId, order: o.order }));
       // Приказы ботов сохраняются как обычные приказы: журнал хода полный, расчёт воспроизводится без повторного запуска ИИ.
+      const botRows: { id: string; player: string; subject: string; payload: Order; key: string }[] = [];
       for (const p of state.players.filter(p => p.isBot && !p.eliminated)) {
         const bo = botOrders(this.b, state, p.id);
         for (let i = 0; i < bo.length; i++) {
           const key = `bot-${m.turn}-${p.id}-${String(i).padStart(3, '0')}`;
           const id = deterministicUuid(`${matchId}/${key}`);
           orders.push({ id, playerId: p.id, order: bo[i] });
-          await tx.query(
-            `INSERT INTO orders (id, match_id, turn, player_id, subject, version, payload, idempotency_key, status) VALUES ($1,$2,$3,$4,$5,1,$6,$7,'consumed')`,
-            [id, matchId, m.turn, p.id, subjectOf(bo[i]), JSON.stringify(bo[i]), key],
-          );
+          botRows.push({ id, player: p.id, subject: subjectOf(bo[i]), payload: bo[i], key });
         }
+      }
+      if (botRows.length) {
+        // Одним запросом: на полной карте это тысячи приказов.
+        await tx.query(
+          `INSERT INTO orders (id, match_id, turn, player_id, subject, version, payload, idempotency_key, status)
+           SELECT (r->>'id')::uuid, $1, $2, r->>'player', r->>'subject', 1, r->'payload', r->>'key', 'consumed'
+           FROM jsonb_array_elements($3::jsonb) r`,
+          [matchId, m.turn, JSON.stringify(botRows)],
+        );
       }
       const { state: next, events } = resolveTurn(this.b, state, orders);
       await saveState(tx, next);
