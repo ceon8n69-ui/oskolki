@@ -93,6 +93,9 @@ test/                    тесты правил, генератора и сер
 | POST | `/api/matches/:id/leave` | покинуть комнату ожидания (участник) |
 | POST | `/api/matches/:id/surrender` | сдаться в идущей партии (повтор безопасен) |
 | POST / DELETE | `/api/matches/:id/archive` | убрать завершённую партию из своего списка / вернуть |
+| GET | `/api/matches/:id/summary` | итоги завершённой партии (владения, потери, изменение рейтинга) |
+| GET | `/api/matches/:id/replay?turn=N` | повтор рассчитанного хода: вид игрока до и после, его события |
+| GET | `/api/leaderboard` | рейтинг: топ-50 и своё место |
 | GET/POST | `/api/matches/:id/preview/moves`, `/preview/attack` | подсветка и прогноз боя |
 | WS | `/ws?token=…` | `subscribe` → `turn_resolved`, `match`, `ready_changed` |
 

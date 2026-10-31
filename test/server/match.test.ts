@@ -599,3 +599,46 @@ test('обучение: фиксированная карта, цель рядо
   const { rows: [seed] } = await db.query('SELECT seed FROM matches WHERE id=$1', [m.id]);
   assert.equal(seed.seed, 'tutorial-1');
 });
+
+test('итоги и рейтинг: партия двух людей меняет рейтинг один раз, боты не в счёт; повтор хода и таблица', async () => {
+  const ta = await devLogin('Аня');
+  const tb = await devLogin('Борис');
+  const m = (await call('POST', '/api/matches', ta, { preset: 'async', turnLimit: 20 })).json;
+  await call('POST', '/api/matches/join', tb, { inviteCode: m.inviteCode });
+  await call('POST', `/api/matches/${m.id}/start`, ta);
+  await call('POST', `/api/matches/${m.id}/ready`, ta, { turn: 1, ready: true });
+  await call('POST', `/api/matches/${m.id}/ready`, tb, { turn: 1, ready: true });
+  assert.ok(await game.processTurn(m.id, 1));
+  // Повтор рассчитанного хода доступен, нерассчитанного — нет.
+  const rp = (await call('GET', `/api/matches/${m.id}/replay?turn=1`, ta)).json;
+  assert.equal(rp.turn, 1);
+  assert.equal(rp.before.view.turn, 1);
+  assert.equal(rp.after.view.turn, 2);
+  assert.ok(Array.isArray(rp.events));
+  assert.equal((await call('GET', `/api/matches/${m.id}/replay?turn=2`, ta)).json.error, 'turn_not_resolved');
+  assert.equal((await call('GET', `/api/matches/${m.id}/summary`, ta)).json.error, 'match_in_progress');
+  // Борис сдаётся — партия завершается, Аня выигрывает.
+  await call('POST', `/api/matches/${m.id}/surrender`, tb);
+  const sum = (await call('GET', `/api/matches/${m.id}/summary`, ta)).json;
+  const pa = sum.players.find((p: { name: string }) => p.name === 'Аня');
+  const pb = sum.players.find((p: { name: string }) => p.name === 'Борис');
+  assert.deepEqual(sum.winners, [pa.id]);
+  assert.equal(pa.rating.after - pa.rating.before, 16);
+  assert.equal(pb.rating.after - pb.rating.before, -16);
+  assert.equal(pb.surrendered, true);
+  // Повторная запись итогов ничего не меняет.
+  const { withTx } = await import('../../src/server/db/pool.ts');
+  await withTx(db, tx => game.recordResults(tx, m.id, [pa.id]));
+  const lb = (await call('GET', '/api/leaderboard', ta)).json;
+  assert.equal(lb.me.rating, pa.rating.after);
+  assert.equal(lb.me.games, 1);
+  assert.ok(lb.top.some((r: { name: string; me: boolean }) => r.me));
+  // Партия с ботом не рейтинговая.
+  const tc = await devLogin('Вика');
+  const v = (await call('POST', '/api/matches', tc, { preset: 'vsbot' })).json;
+  await call('POST', `/api/matches/${v.id}/surrender`, tc);
+  const sv = (await call('GET', `/api/matches/${v.id}/summary`, tc)).json;
+  const me = sv.players.find((p: { name: string }) => p.name === 'Вика');
+  assert.equal(me.rating.rated, false);
+  assert.equal(me.rating.after, me.rating.before);
+});

@@ -90,6 +90,10 @@ export async function buildApp(deps: { cfg: ServerConfig; db: Db; game: GameServ
   app.delete('/api/matches/:id', async (req: FastifyRequest<{ Params: { id: string } }>) => game.deleteRoom(req.params.id, auth(req)));
   app.post('/api/matches/:id/leave', async (req: FastifyRequest<{ Params: { id: string } }>) => game.leaveRoom(req.params.id, auth(req)));
   app.post('/api/matches/:id/surrender', async (req: FastifyRequest<{ Params: { id: string } }>) => game.surrender(req.params.id, auth(req)));
+  // Итоги, повтор хода, рейтинг.
+  app.get('/api/matches/:id/summary', async (req: FastifyRequest<{ Params: { id: string } }>) => game.summary(req.params.id, auth(req)));
+  app.get('/api/matches/:id/replay', async (req: FastifyRequest<{ Params: { id: string }; Querystring: { turn?: string } }>) => game.replay(req.params.id, auth(req), Number(req.query.turn)));
+  app.get('/api/leaderboard', async req => game.leaderboard(auth(req)));
   app.post('/api/matches/:id/archive', async (req: FastifyRequest<{ Params: { id: string } }>) => game.archive(req.params.id, auth(req), true));
   app.delete('/api/matches/:id/archive', async (req: FastifyRequest<{ Params: { id: string } }>) => game.archive(req.params.id, auth(req), false));
 

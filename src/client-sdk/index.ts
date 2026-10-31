@@ -95,6 +95,17 @@ export class OskolkiClient {
   surrender(matchId: string) {
     return this.request<{ ok: true; already: boolean }>('POST', `/api/matches/${matchId}/surrender`);
   }
+  /** Итоги завершённой партии. */
+  summary(matchId: string) {
+    return this.request<MatchSummary>('GET', `/api/matches/${matchId}/summary`);
+  }
+  /** Повтор рассчитанного хода: вид до и после и события игрока. */
+  replay(matchId: string, turn: number) {
+    return this.request<{ turn: number; before: StateResponse; after: StateResponse; events: StoredEvent[] }>('GET', `/api/matches/${matchId}/replay?turn=${turn}`);
+  }
+  leaderboard() {
+    return this.request<Leaderboard>('GET', '/api/leaderboard');
+  }
   /** Убрать партию из своего списка (true) или вернуть из архива (false). */
   archive(matchId: string, hidden = true) {
     return this.request<{ ok: true }>(hidden ? 'POST' : 'DELETE', `/api/matches/${matchId}/archive`);
@@ -369,4 +380,20 @@ export interface Marker {
   label: string;
   shared: boolean;
   turn: number;
+}
+
+export interface MatchSummary {
+  matchId: string;
+  turns: number;
+  winners: string[];
+  reason: string | null;
+  players: {
+    id: string; name: string; faction: string; color: string; isBot: boolean; surrendered: boolean;
+    cities: number; units: number; captured: number; lost: number; recruited: number; techs: number; score: number | null;
+    rating: { before: number; after: number; rated: boolean } | null;
+  }[];
+}
+export interface Leaderboard {
+  top: { place: number; name: string; rating: number; games: number; wins: number; me: boolean }[];
+  me: { place: number; rating: number; games: number; wins: number } | null;
 }
