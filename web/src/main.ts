@@ -1,6 +1,6 @@
 import { loadLiveArt, drawLiveArtIso } from './live-art.ts';
 import { renderTechTree } from './techtree.ts';
-import { loadTechAtlas, factionIcon } from './tech-icons.ts';
+import { loadTechAtlas, factionIcon, glyphPaths, BUILDING_GLYPH, buildingIcon } from './tech-icons.ts';
 // Клиент: 2.5D-изометрия на Canvas 2D (рельеф с высотой, спрайты из web/art), без расчёта правил — только данные сервера.
 import { BALANCE } from '../../src/shared/balance.ts';
 import type { MatchInfo, StateResponse, ViewUnit } from '../../src/shared/protocol.ts';
@@ -35,6 +35,29 @@ const TERRAIN_COLORS: Record<number, string> = { 0: '#1f4e79', 1: '#2f6f9f', 2: 
 const UNIT_LETTER: Record<string, string> = { scout: 'Р', infantry: 'П', spearman: 'К', archer: 'Л', shieldbearer: 'Щ', cavalry: 'В', siege: 'О', engineer: 'И', legionary: 'Лг', standard: 'Зн', ranger: 'Сл', warden: 'Ст', ironclad: 'Лт', bombard: 'Б', corsair: 'Кр', tidecaller: 'З', raider: 'Н', firebrand: 'М', runesmith: 'Ру', sentinel: 'Пс', transport: '⛵', warship: '⚓', commander: '★' };
 const reducedMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
+/** Сводка хода для игрока: постройки, найм, исследования, рост городов. */
+function showDigest(turn: number, events: StoredEvent[]) {
+  const st = client.state;
+  if (!st) return;
+  const me = st.view.me.id;
+  const city = (id: string) => st.view.cities.find(c => c.id === id)?.name ?? '';
+  const lines: string[] = [];
+  for (const { event: e } of events) {
+    if (e.t === 'building_completed' && e.owner === me) lines.push(`${buildingIcon(e.building)}Построено: ${esc(BALANCE.buildings[e.building].name)} · ${esc(city(e.cityId))}`);
+    if (e.t === 'unit_recruited' && e.owner === me) lines.push(`${icon('army')}Нанят: ${esc(BALANCE.units[e.unitType].name)} · ${esc(city(e.cityId))}`);
+    if (e.t === 'research_completed' && e.playerId === me) lines.push(`${icon('flask')}Изучено: ${esc(BALANCE.techs[e.techId].name)}`);
+    if (e.t === 'city_grew' && st.view.cities.find(c => c.id === e.cityId)?.owner === me) lines.push(`${icon('castle')}${esc(city(e.cityId))}: уровень ${e.level}`);
+  }
+  if (!lines.length) return;
+  document.querySelector('.digest')?.remove();
+  const el = document.createElement('button');
+  el.className = 'digest';
+  el.innerHTML = `<b>Итоги хода ${turn}</b>${lines.slice(0, 6).map(l => `<div>${l}</div>`).join('')}${lines.length > 6 ? `<div class="muted">и ещё ${lines.length - 6}</div>` : ''}`;
+  el.onclick = () => el.remove();
+  document.body.appendChild(el);
+  setTimeout(() => el.classList.add('out'), 7000);
+  setTimeout(() => el.remove(), 7400);
+}
 function toast(text: string) {
   const el = document.createElement('div');
   el.className = 'toast';
@@ -553,7 +576,12 @@ async function gameScreen() {
   markers = await client.markers().catch(() => []);
   client.on('state', () => renderAll());
   client.on('match', () => renderAll());
-  client.on('turnResolved', ({ turn, events, before, after }) => startPlayback(turn, events, before, after));
+  // Отладка в браузере (?debug=1): программные нажатия для проверочных скриншотов.
+  if (new URLSearchParams(location.search).get('debug') === '1') (window as any).__osk = { tap: (x: number, y: number) => tap({ x, y }), select: (id: string | null) => select(id, !!id), client };
+  client.on('turnResolved', ({ turn, events, before, after }) => {
+    startPlayback(turn, events, before, after);
+    showDigest(turn, events);
+  });
   if (st.view.turn > 1 && lastPlayedTurn(st.match.id) < st.view.turn - 1) {
     const ev = await client.events(st.view.turn - 1);
     logEvents(ev);
@@ -867,6 +895,52 @@ function paintPortraits(root: HTMLElement) {
   });
 }
 
+/** Сведения о клетке: местность, объекты и что они дают, чья территория. */
+function tileCard(x: number, y: number): string {
+  const st = client.state!;
+  const t = client.tile(x, y);
+  const lines: string[] = [];
+  let title = t && t.terrain !== 255 ? TERRAIN_RU[t.terrain] : 'Не разведано';
+  if (t && t.terrain !== 255) {
+    for (const f of [16, 32, 64]) {
+      if (!(t.features & f)) continue;
+      const rr = RES_RULE[f];
+      title = rr.name;
+      const hs = harvesters(x, y, rr.building);
+      const bName = BALANCE.buildings[rr.building].name;
+      const status = !hs.length ? `<span class="why">Не добывается: нужен ваш город не дальше ${BALANCE.cities.materialRadius} клеток</span>`
+        : hs.some(h => h.has) ? `<span class="tag ok">${icon('check')}Добывает ${esc(hs.filter(h => h.has).map(h => h.c.name).join(', '))} · есть ${esc(bName)}</span>`
+        : `<span class="tag">Добывает ${esc(hs.map(h => h.c.name).join(', '))}${f === 64 ? ' — только с ' : ' · больше с '}${esc(bName)}</span>`;
+      lines.push(`<div class="ts-line">${esc(rr.text)}</div><div class="ts-line">${status}</div>`);
+    }
+    if (t.features & 4) {
+      const looted = st.view.lootedRuins.includes(y * st.view.map.width + x);
+      title = 'Руины';
+      lines.push(`<div class="ts-line">${looted ? 'Уже разграблены.' : 'Отряд, вошедший первым, получает награду: золото, знания, опыт или материалы.'}</div>`);
+    }
+    if (t.features & 8) {
+      title = 'Святилище';
+      lines.push(`<div class="ts-line">Цель влияния: кто удерживает святилище, получает ${BALANCE.influence.shrinePoints} очка влияния в ход.</div>`);
+    }
+    if (t.features & 128) lines.push(`<div class="ts-line">Укрепление: защита отряда на клетке ×${BALANCE.forts.defenseMul}.</div>`);
+    if (t.features & 1) lines.push('<div class="ts-line">Дорога: движение вдвое дешевле.</div>');
+    const o = st.view.structures.find(s => s.x === x && s.y === y);
+    if (o) {
+      title = 'Обелиск';
+      lines.push(`<div class="ts-line">${o.linked ? 'Связан с городом: даёт обзор, снабжение и поле резонанса.' : 'Не связан с городом — не действует.'}</div>`);
+    }
+    const ci = territory()[y * st.view.map.width + x];
+    if (ci >= 0) {
+      const c = st.view.cities[ci];
+      const own = st.view.players.find(p => p.id === c.owner);
+      lines.push(`<div class="ts-line muted"><span class="dot" style="background:${own?.color ?? '#bbb'}"></span>Территория города ${esc(c.name)}${c.owner === st.view.me.id ? ' (ваш)' : ` · ${esc(own?.name ?? '')}`}</div>`);
+    }
+  }
+  return `<div class="card-row"><div class="card-main"><div class="card-title"><b>${esc(title)}</b></div></div>${terrainLine(x, y)}<button class="icon-btn sm" id="tClose" aria-label="Закрыть">${icon('close')}</button></div>
+    ${lines.join('')}
+    <div class="btn-row"><button class="btn sm" id="tMark">${icon('flag')}Метка</button></div>`;
+}
+
 function renderCard() {
   const el = document.getElementById('card')!;
   const st = client.state!;
@@ -901,10 +975,10 @@ function renderCard() {
       if (actionMode === 'ability' && planning) {
         html += `<div class="btn-row wrap">${unitAbilities(u).map(a => `<button class="btn sm ${a.id === 'scorch' ? 'danger-text' : ''}" data-ab="${a.id}">${esc(a.label)}</button>`).join('')}</div>`;
       }
-      const ctxFallback = planning && !ctxFits;
+      const ctxFallback = planning;
       html += `<div class="card-foot"><span class="muted">${ord ? `Приказ: ${describeOrder(ord.order)}` : u.carriedBy ? 'На борту' : u.cargo ? `На борту: ${u.cargo}` : 'Без приказа'}${u.route?.path?.length ? ` · маршрут ${u.route.path.length}` : ''}</span>
         ${ord && planning ? `<button class="btn sm" id="uCancel">Отменить приказ</button>` : ''}</div>
-        ${ctxFallback ? `<div class="btn-row">${ctxButtons(u).map(b => `<button class="btn sm ${b.cls}" data-ctx="${b.id}">${icon(b.icon)}${esc(b.label)}</button>`).join('')}</div>` : ''}`;
+        ${ctxFallback ? `<div class="act-row">${ctxButtons(u).map(b => `<button class="act ${b.cls}" data-ctx="${b.id}">${icon(b.icon)}<span>${esc(b.label)}</span></button>`).join('')}</div>${actionMode === 'move' && moveTiles.length ? '<div class="muted small">Жёлтые клетки — куда можно пойти</div>' : ''}` : ''}`;
     }
   } else if (selectedCity) {
     const c = st.view.cities.find(x => x.id === selectedCity);
@@ -917,22 +991,19 @@ function renderCard() {
         <div class="card-main"><div class="card-title"><b>${esc(c.name)}</b><span class="muted"> · ур. ${c.level}${c.isCapital ? ' · столица' : ''}</span></div>
           <div class="muted">${esc(owner?.name ?? 'Нейтральный')}${c.contestedBy ? ' · оспаривается' : ''}${!c.visibleNow ? ` · сведения хода ${c.seenTurn ?? '—'}` : ''}</div>
           ${mine && ci ? `<div class="stats"><span>${RES_ICON.gold}+${ci.gold}</span><span>⚒ +${ci.production}</span><span>${RES_ICON.knowledge}+${ci.knowledge}</span></div>` : ''}
-          ${mine ? `<div class="muted">${head ? `Строится: ${esc(head.kind === 'building' ? BALANCE.buildings[head.unitType].name : BALANCE.units[head.unitType].name)} ${head.progress}/${head.kind === 'building' ? BALANCE.buildings[head.unitType].cost.production : BALANCE.units[head.unitType].cost.production}` : 'Очередь пуста'}</div>` : ''}</div>
+          </div>
         ${terrainLine(c.x, c.y)}</div>
+        ${c.buildings.length || mine ? `<div class="bld-row">${c.buildings.map(bd => `<span class="bld">${buildingIcon(bd)}${esc(BALANCE.buildings[bd].name)}</span>`).join('') || '<span class="muted">Построек нет</span>'}</div>` : ''}
+        ${mine && head ? (() => {
+          const need = head.kind === 'building' ? BALANCE.buildings[head.unitType].cost.production : BALANCE.units[head.unitType].cost.production;
+          const per = Math.max(1, ci?.production ?? 1);
+          return `<div class="qline"><span>${head.kind === 'building' ? buildingIcon(head.unitType) : icon('army')}${esc(head.kind === 'building' ? BALANCE.buildings[head.unitType].name : BALANCE.units[head.unitType].name)}</span><span class="muted">${head.progress}/${need} ⚒ · ещё ~${Math.max(1, Math.ceil((need - head.progress) / per))} ход.</span></div><div class="qbar"><i style="width:${Math.min(100, (head.progress / need) * 100)}%"></i></div>`;
+        })() : mine ? '<div class="muted">Очередь пуста</div>' : ''}
+        ${mine && ci ? `<div class="muted small">Территория (рамка на карте): ${RES_ICON.wood}+${ci.wood} ${RES_ICON.iron}+${ci.iron} ${RES_ICON.crystal}+${ci.crystal} в ход</div>` : ''}
         ${mine ? `<div class="btn-row"><button class="btn gold sm" id="cOpen">Нанять и строить</button></div>` : ''}`;
     }
   } else if (tileInfo) {
-    const t = client.tile(tileInfo.x, tileInfo.y);
-    const feats: string[] = [];
-    if (t) {
-      if (t.features & 4) feats.push('руины');
-      if (t.features & 8) feats.push('святилище');
-      if (t.features & 16) feats.push('древесина');
-      if (t.features & 32) feats.push('железо');
-      if (t.features & 64) feats.push('кристаллы');
-    }
-    html = `<div class="card-row"><div class="card-main"><div class="card-title"><b>Клетка ${tileInfo.x}, ${tileInfo.y}</b></div><div class="muted">${feats.join(', ') || (t && t.terrain !== 255 ? '' : 'не разведано')}</div></div>${terrainLine(tileInfo.x, tileInfo.y)}</div>
-      <div class="btn-row"><button class="btn sm" id="tMark">${icon('flag')}Метка</button><button class="btn sm" id="tClose">Закрыть</button></div>`;
+    html = tileCard(tileInfo.x, tileInfo.y);
   }
   const show = !!html && !panel;
   el.classList.toggle('open', show);
@@ -994,19 +1065,9 @@ function runCtx(u: ViewUnit, id: string) {
   renderAll();
 }
 function renderCtx() {
+  // Кнопки действий — в карточке: на карте они закрывали соседние клетки.
   const box = document.getElementById('ctx');
-  if (!box) return;
-  const st = client.state!;
-  const u = selected ? st.view.units.find(x => x.id === selected && x.owner === st.view.me.id) : null;
-  const planning = st.match.phase === 'planning' && !(player && !player.done) && !myMatchState().out;
-  if (!u || !planning || attackPlan || panel) {
-    box.innerHTML = '';
-    return;
-  }
-  const items = ctxButtons(u);
-  box.innerHTML = items.map(b => `<button class="ctx-btn ${b.cls}" data-ctx="${b.id}" aria-label="${b.label}" title="${b.label}">${icon(b.icon)}</button>`).join('');
-  box.querySelectorAll<HTMLButtonElement>('[data-ctx]').forEach(bt => (bt.onclick = () => runCtx(u, bt.dataset.ctx!)));
-  positionCtx();
+  if (box) box.innerHTML = '';
 }
 /** Каждый кадр: кнопки под отрядом (или над ним), в пределах видимой области; иначе — в карточке. */
 function positionCtx() {
@@ -1466,6 +1527,116 @@ function diamond(sx: number, sy: number, S: number, shrink = 1) {
   ctx.closePath();
 }
 
+// ---------- территория городов (как в Polytopia) ----------
+// Территория — клетки в радиусе добычи (materialRadius) вокруг города; спорные клетки — ближайшему городу.
+const terrCache = new WeakMap<object, { idx: Int16Array; key: string }>();
+function territory(): Int16Array {
+  const st = client.state!;
+  const key = st.view.cities.map(c => `${c.id}:${c.owner}`).join('|');
+  const hit = terrCache.get(st.view);
+  if (hit && hit.key === key) return hit.idx;
+  const W = st.view.map.width, H = st.view.map.height, r = BALANCE.cities.materialRadius;
+  const idx = new Int16Array(W * H).fill(-1);
+  const best = new Uint8Array(W * H).fill(255);
+  st.view.cities.forEach((c, i) => {
+    if (!c.owner || !st.view.players.some(p => p.id === c.owner)) return;
+    for (let y = Math.max(0, c.y - r); y <= Math.min(H - 1, c.y + r); y++) for (let x = Math.max(0, c.x - r); x <= Math.min(W - 1, c.x + r); x++) {
+      const d = Math.max(Math.abs(x - c.x), Math.abs(y - c.y));
+      const k = y * W + x;
+      if (d < best[k]) {
+        best[k] = d;
+        idx[k] = i;
+      }
+    }
+  });
+  terrCache.set(st.view, { idx, key });
+  return idx;
+}
+function cityOwnerAt(terr: Int16Array, x: number, y: number): string | null {
+  const st = client.state!;
+  const W = st.view.map.width;
+  if (x < 0 || y < 0 || x >= W || y >= st.view.map.height) return null;
+  const i = terr[y * W + x];
+  return i >= 0 ? st.view.cities[i].owner : null;
+}
+/** Граница владений: лёгкая заливка и линия по краю там, где кончается территория хозяина. */
+function drawTerritory(x: number, y: number, terr: Int16Array) {
+  const st = client.state!;
+  const i = terr[y * st.view.map.width + x];
+  if (i < 0) return;
+  const owner = st.view.cities[i].owner!;
+  const color = st.view.players.find(p => p.id === owner)?.color ?? '#bbb';
+  const S = cam.size;
+  const { sx, sy } = tileToScreen(x, y);
+  if (sx < -S || sx > innerWidth + S || sy < -S || sy > innerHeight + S) return;
+  diamond(sx, sy, S, 1);
+  ctx.fillStyle = color + '24';
+  ctx.fill();
+  const k = 0.9;
+  const T = { x: sx, y: sy - (S / 4) * k }, R = { x: sx + (S / 2) * k, y: sy }, B = { x: sx, y: sy + (S / 4) * k }, L = { x: sx - (S / 2) * k, y: sy };
+  const edges: [number, number, { x: number; y: number }, { x: number; y: number }][] = [[1, 0, R, B], [-1, 0, L, T], [0, 1, B, L], [0, -1, T, R]];
+  ctx.lineCap = 'round';
+  for (const [dx, dy, a, b] of edges) {
+    if (cityOwnerAt(terr, x + dx, y + dy) === owner) continue;
+    ctx.beginPath(); ctx.moveTo(a.x, a.y); ctx.lineTo(b.x, b.y);
+    ctx.strokeStyle = '#0008';
+    ctx.lineWidth = Math.max(3, S * 0.075);
+    ctx.stroke();
+    ctx.strokeStyle = color;
+    ctx.lineWidth = Math.max(2, S * 0.045);
+    ctx.stroke();
+  }
+}
+
+const RES_RULE: Record<number, { name: string; mat: 'wood' | 'iron' | 'crystal'; building: string; text: string }> = {
+  16: { name: 'Древесина', mat: 'wood', building: 'lumber_mill', text: 'Город, в территории которого лежит месторождение, получает +1 древесины в ход; с Лесопилкой — ещё +1 за каждое месторождение.' },
+  32: { name: 'Железо', mat: 'iron', building: 'mine', text: 'Город получает +1 железа в ход; с Шахтой — ещё +1 за каждое месторождение.' },
+  64: { name: 'Кристаллы', mat: 'crystal', building: 'mine', text: 'Добываются только с Шахтой: +1 кристалл в ход за каждое месторождение в территории.' },
+};
+/** Свои города, добывающие клетку (в радиусе добычи), и есть ли у них нужная постройка. */
+function harvesters(x: number, y: number, building: string) {
+  const st = client.state!;
+  const r = BALANCE.cities.materialRadius;
+  return st.view.cities.filter(c => c.owner === st.view.me.id && Math.max(Math.abs(c.x - x), Math.abs(c.y - y)) <= r).map(c => ({ c, has: c.buildings.includes(building) }));
+}
+function drawHarvestBadge(x: number, y: number, t: NonNullable<ReturnType<typeof client.tile>>) {
+  const S = cam.size;
+  if (S < 22 || !(t.features & 112)) return;
+  const worked = [16, 32, 64].some(f => t.features & f && harvesters(x, y, RES_RULE[f].building).some(h => h.has));
+  if (!worked) return;
+  const { sx, sy } = tileToScreen(x, y);
+  const r = Math.max(6, S * 0.1);
+  const cx = sx + S * 0.28, cy = sy - S * 0.02;
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = '#3f9b5f'; ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+  ctx.beginPath(); ctx.moveTo(cx - r * 0.45, cy); ctx.lineTo(cx - r * 0.1, cy + r * 0.4); ctx.lineTo(cx + r * 0.5, cy - r * 0.35);
+  ctx.lineWidth = Math.max(1.5, r * 0.28); ctx.stroke();
+}
+/** Значок постройки на карте: кружок с глифом; progress — строящаяся (0..1). */
+function drawBuildingBadge(cx: number, cy: number, r: number, id: string, progress: number | null) {
+  ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fillStyle = progress === null ? '#fdf6e6' : '#2a3a55';
+  ctx.fill();
+  ctx.lineWidth = 1.5;
+  ctx.strokeStyle = progress === null ? '#d9921b' : '#ffffff55';
+  ctx.stroke();
+  if (progress !== null) {
+    ctx.beginPath(); ctx.arc(cx, cy, r, -Math.PI / 2, -Math.PI / 2 + Math.PI * 2 * progress);
+    ctx.strokeStyle = '#7ef0a0'; ctx.lineWidth = 2.5; ctx.stroke();
+  }
+  ctx.save();
+  const k = (r * 1.25) / 24;
+  ctx.translate(cx - 12 * k, cy - 12 * k);
+  ctx.scale(k, k);
+  ctx.strokeStyle = progress === null ? '#1a2a46' : '#e8edf5';
+  ctx.lineWidth = 2.2;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+  for (const p of glyphPaths(BUILDING_GLYPH[id] ?? 'book')) ctx.stroke(p);
+  ctx.restore();
+}
+
 function drawTile(x: number, y: number, t: ReturnType<typeof client.tile>, overlay: string | null) {
   const S = cam.size;
   const terr = t?.terrain ?? 255;
@@ -1620,6 +1791,7 @@ function frame(now: number) {
   const selCity = selectedCity ? st.view.cities.find(c => c.id === selectedCity) : null;
   const selTile = selUnit ? selUnit.y * W0 + selUnit.x : selCity ? selCity.y * W0 + selCity.x : tileInfo ? tileInfo.y * W0 + tileInfo.x : -1;
 
+  const terr = territory();
   // Объекты по диагоналям глубины (x+y): рисуются после клеток своей диагонали.
   const layers = new Map<number, (() => void)[]>();
   const put = (x: number, y: number, fn: () => void) => {
@@ -1667,6 +1839,7 @@ function frame(now: number) {
       if (m) overlay = m.embark || m.disembark ? '#6fc3ff77' : '#f2c14e70';
       else if (supplyLayer && t && (client.chunk(Math.floor(x / cs), Math.floor(y / cs))?.supply ?? [])[(y % cs) * cs + (x % cs)]) overlay = '#5fbf7a44';
       drawTile(x, y, t, overlay);
+      if (t && t.terrain !== 255) drawTerritory(x, y, terr);
       const ti = y * W0 + x;
       if (ti === selTile || targetTiles.has(ti)) {
         const p = tileToScreen(x, y);
@@ -1684,11 +1857,15 @@ function frame(now: number) {
     }
     for (let x = xa; x <= xb; x++) {
       const t = client.tile(x, d - x);
-      if (t && t.terrain !== 255) drawTileProps(x, d - x, t);
+      if (t && t.terrain !== 255) {
+        drawTileProps(x, d - x, t);
+        drawHarvestBadge(x, d - x, t);
+      }
     }
     for (const fn of layers.get(d) ?? []) fn();
   }
 
+  for (const c of st.view.cities) drawCityOverlay(c);
   // Обучение: пульсирующее кольцо вокруг цели шага.
   const tt = tutTarget();
   if (tt) {
@@ -1781,6 +1958,13 @@ function drawCity(c: StateResponse['view']['cities'][number]) {
     ctx.stroke();
     ctx.setLineDash([]);
   }
+}
+
+/** Подпись и постройки города — поверх отрядов, чтобы их не закрывали фигуры на клетке. */
+function drawCityOverlay(c: StateResponse['view']['cities'][number]) {
+  const S = cam.size;
+  const { sx, sy } = tileToScreen(c.x, c.y);
+  if (sx < -S || sx > innerWidth + S || sy < -S || sy > innerHeight + S) return;
   if (S > 20) {
     const label = c.name + (c.isCapital ? ' ★' : '') + ` ${c.level}`;
     ctx.font = 'bold 11px system-ui';
@@ -1790,6 +1974,16 @@ function drawCity(c: StateResponse['view']['cities'][number]) {
     ctx.fillRect(sx - w / 2, sy + S * 0.2, w, 16);
     ctx.fillStyle = c.visibleNow ? '#fff' : '#fff8';
     ctx.fillText(label, sx, sy + S * 0.2 + 12);
+  }
+  // Постройки: готовые и строящаяся (с кольцом прогресса).
+  const head = c.queue[0];
+  const building = head && head.kind === 'building' ? head : null;
+  const items: [string, number | null][] = [...c.buildings.map(b => [b, null] as [string, null]), ...(building ? [[building.unitType, Math.min(1, building.progress / BALANCE.buildings[building.unitType].cost.production)] as [string, number]] : [])];
+  if (S >= 26 && items.length) {
+    const r = Math.max(7, Math.min(12, S * 0.11));
+    const gap = r * 2 + 3;
+    const y0 = sy + S * 0.2 + 16 + r + 3;
+    items.forEach(([id, pr], i) => drawBuildingBadge(sx - ((items.length - 1) * gap) / 2 + i * gap, y0, r, id, pr));
   }
 }
 
@@ -2004,6 +2198,7 @@ async function planAttack(sel: ViewUnit, target: ViewUnit) {
 
 async function tap(t: Coord) {
   const st = client.state!;
+  const prevInfo = tileInfo as Coord | null;
   if (panel) closePanel();
   if (player && !player.done) return;
   if (pulseMode) {
@@ -2014,6 +2209,16 @@ async function tap(t: Coord) {
   const here = st.view.units.find(u => u.x === t.x && u.y === t.y && !u.carriedBy);
   const sel = selected ? st.view.units.find(u => u.id === selected && u.owner === st.view.me.id) : null;
   tileInfo = null;
+  // Повторное нажатие на выбранный отряд в городе переключает на город (как в Polytopia).
+  const cityHere = st.view.cities.find(c => c.x === t.x && c.y === t.y);
+  if (here && selected === here.id && cityHere) {
+    selected = null;
+    moveTiles = [];
+    targetIds = new Set();
+    attackPlan = null;
+    selectedCity = cityHere.id;
+    return renderAll();
+  }
   if (sel && planning) {
     const opt = moveTiles.find(m => m.x === t.x && m.y === t.y);
     if (opt?.disembark) return submit(client.disembark(sel.id, t));
@@ -2064,6 +2269,17 @@ async function tap(t: Coord) {
     targetIds = new Set();
     attackPlan = null;
     selectedCity = city.id;
+    return renderAll();
+  }
+  // Без выделения нажатие на клетку показывает, что на ней; повторное — закрывает.
+  if (!sel) {
+    const was = !!prevInfo && prevInfo.x === t.x && prevInfo.y === t.y;
+    selected = null;
+    moveTiles = [];
+    targetIds = new Set();
+    attackPlan = null;
+    selectedCity = null;
+    tileInfo = was ? null : t;
     return renderAll();
   }
   // Пустая область снимает выделение.
