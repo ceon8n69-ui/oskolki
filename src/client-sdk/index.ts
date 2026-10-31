@@ -5,6 +5,7 @@ import type {
 } from '../shared/protocol.ts';
 import type { BuildKind, Coord, Order, StoredEvent } from '../shared/types.ts';
 import { orderSubjectKey } from '../shared/types.ts';
+import type { ShopItem } from '../shared/shop.ts';
 
 export * from './playback.ts';
 
@@ -105,6 +106,16 @@ export class OskolkiClient {
   }
   leaderboard() {
     return this.request<Leaderboard>('GET', '/api/leaderboard');
+  }
+  /** Лавка за Telegram Stars (только косметика). */
+  shop() {
+    return this.request<{ items: (ShopItem & { owned: boolean })[]; equippedColor: string | null }>('GET', '/api/shop');
+  }
+  shopInvoice(item: string) {
+    return this.request<{ link: string }>('POST', '/api/shop/invoice', { item });
+  }
+  equip(item: string | null) {
+    return this.request<{ ok: true }>('POST', '/api/shop/equip', { item });
   }
   /** Убрать партию из своего списка (true) или вернуть из архива (false). */
   archive(matchId: string, hidden = true) {
@@ -394,6 +405,6 @@ export interface MatchSummary {
   }[];
 }
 export interface Leaderboard {
-  top: { place: number; name: string; rating: number; games: number; wins: number; me: boolean }[];
+  top: { place: number; name: string; rating: number; games: number; wins: number; me: boolean; crown?: boolean }[];
   me: { place: number; rating: number; games: number; wins: number } | null;
 }

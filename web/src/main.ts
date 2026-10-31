@@ -222,7 +222,7 @@ async function lobby() {
     return `Ход ${m.turn}${me?.ready ? ' · вы готовы' : ''}`;
   };
   app.innerHTML = `<div class="screen rooms">
-    <header class="rooms-head">${icon('crown', 'crest')}<h1>Осколки королевств</h1><button class="btn sm" id="lbBtn">${icon('star')}Рейтинг</button></header>
+    <header class="rooms-head">${icon('crown', 'crest')}<h1>Осколки королевств</h1><button class="btn sm hb" id="shopBtn" aria-label="Лавка">${icon('crown')}<span>Лавка</span></button><button class="btn sm hb" id="lbBtn" aria-label="Рейтинг">${icon('star')}<span>Рейтинг</span></button></header>
     <details class="new-game" ${all.length ? '' : 'open'}><summary>${icon('plus')} Новая партия</summary>
       <div class="field"><label for="fac">Народ</label><select id="fac">${Object.entries(BALANCE.factions).map(([id, f]) => `<option value="${id}">${esc(f.name)}</option>`).join('')}</select></div>
       <div class="presets">${Object.keys(BALANCE.turnPresets).map(p => `<button class="btn preset" data-p="${p}"><b>${esc(PRESET_NAMES[p] ?? p)}</b><span>${esc(presetHint(p))}</span></button>`).join('')}</div>
@@ -240,6 +240,7 @@ async function lobby() {
   </div>`;
   app.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach(b => (b.onclick = () => ((roomTab = b.dataset.tab as RoomTab), lobby())));
   document.getElementById('lbBtn')!.onclick = () => leaderboardScreen();
+  document.getElementById('shopBtn')!.onclick = () => shopScreen();
   app.querySelectorAll<HTMLButtonElement>('[data-p]').forEach(b => (b.onclick = async () => {
     const vic = (document.getElementById('vic') as HTMLSelectElement).value;
     const tl = (document.getElementById('tl') as HTMLInputElement).value;
@@ -273,11 +274,49 @@ async function leaderboardScreen() {
   app.innerHTML = `<div class="screen rooms">
     <header class="rooms-head"><button class="icon-btn" id="back" aria-label="К партиям">${icon('back')}</button><h1>Рейтинг</h1></header>
     ${lb?.me ? `<div class="panel-card row-between"><b>Ваше место ${lb.me.place}</b><span>${lb.me.rating} · партий ${lb.me.games} · побед ${lb.me.wins}</span></div>` : '<div class="panel-card muted">Рейтинг появится после первой партии с другим игроком</div>'}
-    <div class="lb">${(lb?.top ?? []).map(r => `<div class="lb-row ${r.me ? 'me' : ''}"><span class="lb-place">${r.place}</span><b>${esc(r.name)}</b><span class="lb-r">${r.rating}</span><span class="muted">${r.wins}/${r.games}</span></div>`).join('') || '<p class="empty">Пока пусто</p>'}</div></div>`;
+    <div class="lb">${(lb?.top ?? []).map(r => `<div class="lb-row ${r.me ? 'me' : ''}"><span class="lb-place">${r.place}</span><b>${r.crown ? `<span class="crown" title="Корона">${icon('crown', 'fill')}</span>` : ''}${esc(r.name)}</b><span class="lb-r">${r.rating}</span><span class="muted">${r.wins}/${r.games}</span></div>`).join('') || '<p class="empty">Пока пусто</p>'}</div></div>`;
   backStack.length = 0;
   backStack.push(() => lobby());
   syncBack();
   document.getElementById('back')!.onclick = () => lobby();
+}
+
+async function shopScreen() {
+  const data = await client.shop().catch(e => (toast(errText(e)), null));
+  if (!data) return lobby();
+  app.innerHTML = `<div class="screen rooms">
+    <header class="rooms-head"><button class="icon-btn" id="back" aria-label="К партиям">${icon('back')}</button><h1>Лавка</h1></header>
+    <div class="panel-card muted">Только внешний вид — на силу в игре не влияет. Оплата — Telegram Stars.</div>
+    <div class="shop">${data.items.map(i => {
+      const equipped = i.kind === 'color' && data.equippedColor === i.id;
+      const action = !i.owned ? `<button class="btn gold sm" data-buy="${i.id}">★ ${i.stars}</button>`
+        : i.kind === 'color' ? `<button class="btn sm" data-equip="${equipped ? '' : i.id}">${equipped ? 'Снять' : 'Выбрать'}</button>` : '<span class="tag ok">Куплено</span>';
+      return `<div class="shop-item ${equipped ? 'on' : ''}"><div class="swatch" style="${i.color ? `background:${i.color}` : ''}">${i.kind === 'badge' ? icon('crown', 'fill') : ''}</div>
+        <div class="grow"><b>${esc(i.name)}</b><div class="muted">${esc(i.description)}</div></div>${action}</div>`;
+    }).join('')}</div></div>`;
+  backStack.length = 0;
+  backStack.push(() => lobby());
+  syncBack();
+  document.getElementById('back')!.onclick = () => lobby();
+  app.querySelectorAll<HTMLButtonElement>('[data-buy]').forEach(b => (b.onclick = async () => {
+    if (!tg?.openInvoice) return toast('Оплата доступна в Telegram');
+    try {
+      b.disabled = true;
+      const { link } = await client.shopInvoice(b.dataset.buy!);
+      tg.openInvoice(link, (status: string) => {
+        b.disabled = false;
+        if (status === 'paid') {
+          toast('Покупка получена');
+          // Выдача приходит от Telegram отдельным уведомлением — обновляем лавку чуть позже.
+          setTimeout(() => void shopScreen(), 1500);
+        } else if (status === 'failed') toast('Оплата не прошла');
+      });
+    } catch (e) {
+      b.disabled = false;
+      toast(errText(e));
+    }
+  }));
+  app.querySelectorAll<HTMLButtonElement>('[data-equip]').forEach(b => (b.onclick = () => client.equip(b.dataset.equip || null).then(() => shopScreen()).catch(e => toast(errText(e)))));
 }
 
 function presetHint(p: string): string {
