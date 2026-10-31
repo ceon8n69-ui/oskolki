@@ -254,6 +254,8 @@ export interface TurnPreset {
   turnLimit: number | null;
   alliances: boolean;
   botTakeoverAfter: number | null;
+  /** Обучение: фиксированная карта, пассивный противник, разведчик-цель рядом со столицей. */
+  tutorial?: boolean;
 }
 
 function validate(b: Balance): Balance {
