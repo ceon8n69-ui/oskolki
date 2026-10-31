@@ -20,7 +20,7 @@ import { createInitialState } from '../worldgen/setup.ts';
 import { generateWorldAsync } from '../worldgen/async.ts';
 import type { Db, Tx } from './db/pool.ts';
 import { withTx } from './db/pool.ts';
-import { invalidateCachedState, loadState, loadStateCached, saveMap, saveState, saveTileChanges, setCachedMap, setCachedState, stateHash, stateToJson } from './store.ts';
+import { invalidateCachedState, loadState, loadStateCached, saveMap, saveState, saveTileChanges, setCachedMap, setCachedState, stateFromJson, stateHash, stateToJson } from './store.ts';
 
 export class GameError extends Error {
   code: string;
@@ -343,6 +343,111 @@ export class GameService extends EventEmitter {
     return rows.map(r => ({ seq: r.seq, phase: r.phase, visibleTo: [playerId], event: r.event }));
   }
 
+  // ---------------- Итоги, рейтинг, повтор ----------------
+
+  /**
+   * Итоги партии и рейтинг (Эло). Рейтинговые — партии хотя бы двух разных людей; боты не в счёт.
+   * Каждый человек сравнивается с каждым: победитель против проигравшего — 1:0, оба победителя или оба проигравших — ничья.
+   * Запись одна на пользователя и партию: повторный вызов ничего не меняет.
+   */
+  async recordResults(tx: Tx, matchId: string, winners: string[]): Promise<void> {
+    const { rows: humans } = await tx.query(
+      `SELECT p.id, p.user_id, p.surrendered_turn FROM players p WHERE p.match_id=$1 AND p.user_id IS NOT NULL ORDER BY p.user_id`, [matchId]);
+    if (!humans.length) return;
+    const { rows: done } = await tx.query('SELECT 1 FROM match_results WHERE match_id=$1 LIMIT 1', [matchId]);
+    if (done.length) return;
+    for (const h of humans) await tx.query('INSERT INTO ratings (user_id) VALUES ($1) ON CONFLICT DO NOTHING', [h.user_id]);
+    const { rows: rr } = await tx.query('SELECT user_id, rating FROM ratings WHERE user_id = ANY($1::bigint[]) FOR UPDATE', [humans.map(h => h.user_id)]);
+    const before = new Map(rr.map(r => [String(r.user_id), r.rating as number]));
+    const rated = new Set(humans.map(h => String(h.user_id))).size >= 2;
+    const won = (h: { id: string }) => winners.includes(h.id);
+    const K = 32;
+    for (const h of humans) {
+      const rb = before.get(String(h.user_id))!;
+      let delta = 0;
+      if (rated) {
+        const opp = humans.filter(o => String(o.user_id) !== String(h.user_id));
+        for (const o of opp) {
+          const ro = before.get(String(o.user_id))!;
+          const expected = 1 / (1 + 10 ** ((ro - rb) / 400));
+          const score = won(h) === won(o) ? 0.5 : won(h) ? 1 : 0;
+          delta += (K / opp.length) * (score - expected);
+        }
+      }
+      const ra = Math.round(rb + delta);
+      const outcome = winners.length === 0 ? 'draw' : won(h) ? 'win' : 'loss';
+      await tx.query(
+        `INSERT INTO match_results (match_id, user_id, player_id, outcome, surrendered, rated, rating_before, rating_after) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+         ON CONFLICT DO NOTHING`,
+        [matchId, h.user_id, h.id, outcome, h.surrendered_turn !== null, rated, rb, ra],
+      );
+      await tx.query(
+        `UPDATE ratings SET rating=$2, games=games + $3, wins=wins + $4, updated_at=now() WHERE user_id=$1`,
+        [h.user_id, ra, rated ? 1 : 0, rated && outcome === 'win' ? 1 : 0],
+      );
+    }
+  }
+
+  async leaderboard(userId: number): Promise<{ top: { place: number; name: string; rating: number; games: number; wins: number; me: boolean }[]; me: { place: number; rating: number; games: number; wins: number } | null }> {
+    const { rows } = await this.db.query(
+      `SELECT r.user_id, r.rating, r.games, r.wins, coalesce(u.first_name, u.username, 'Игрок') AS name, rank() OVER (ORDER BY r.rating DESC) AS place
+       FROM ratings r JOIN users u ON u.id=r.user_id WHERE r.games > 0 ORDER BY r.rating DESC, r.games DESC LIMIT 50`);
+    const { rows: [me] } = await this.db.query(
+      `SELECT rating, games, wins, (SELECT count(*)::int + 1 FROM ratings x WHERE x.games > 0 AND x.rating > r.rating) AS place FROM ratings r WHERE user_id=$1`, [userId]);
+    return {
+      top: rows.map(r => ({ place: Number(r.place), name: r.name, rating: r.rating, games: r.games, wins: r.wins, me: Number(r.user_id) === userId })),
+      me: me ? { place: me.place, rating: me.rating, games: me.games, wins: me.wins } : null,
+    };
+  }
+
+  /** Итоги завершённой партии: результат, владения в конце, события по игрокам, изменение рейтинга. */
+  async summary(matchId: string, userId: number) {
+    await this.playerIdFor(matchId, userId);
+    const info = await this.matchInfo(matchId);
+    if (info.phase !== 'finished') throw new GameError('match_in_progress', 409);
+    const state = await loadStateCached(this.db, matchId);
+    const { rows: ev } = await this.db.query(
+      `SELECT event->>'t' AS t, coalesce(event->>'owner', event->>'to', event->>'playerId') AS p, count(*)::int AS n
+       FROM turn_events WHERE match_id=$1 AND event->>'t' IN ('unit_destroyed', 'city_captured', 'unit_recruited', 'research_completed')
+       GROUP BY 1, 2`, [matchId]);
+    const { rows: res } = await this.db.query('SELECT player_id, outcome, rating_before, rating_after, rated FROM match_results WHERE match_id=$1', [matchId]);
+    const count = (t: string, p: string) => ev.find(r => r.t === t && r.p === p)?.n ?? 0;
+    return {
+      matchId, turns: Math.max(1, info.turn - 1), winners: info.winners ?? [], reason: (state.mode.finished?.reason ?? null) as string | null,
+      players: info.players.map(p => {
+        const r = res.find(x => x.player_id === p.id);
+        return {
+          id: p.id, name: p.name, faction: p.faction, color: p.color, isBot: p.isBot, surrendered: !!p.surrendered,
+          cities: state.cities.filter(c => c.owner === p.id).length,
+          units: state.units.filter(u => u.owner === p.id).length,
+          captured: count('city_captured', p.id), lost: count('unit_destroyed', p.id), recruited: count('unit_recruited', p.id), techs: count('research_completed', p.id),
+          score: state.mode.scores[p.id] ?? null,
+          rating: r ? { before: r.rating_before, after: r.rating_after, rated: r.rated } : null,
+        };
+      }),
+    };
+  }
+
+  /**
+   * Повтор хода N для участника: вид игрока до и после хода и его события (туман войны того хода сохраняется).
+   * Доступны только уже рассчитанные ходы.
+   */
+  async replay(matchId: string, userId: number, turn: number): Promise<{ turn: number; before: StateResponse; after: StateResponse; events: StoredEvent[] }> {
+    const playerId = await this.playerIdFor(matchId, userId);
+    const { rows: [m] } = await this.db.query('SELECT * FROM matches WHERE id=$1', [matchId]);
+    if (!Number.isInteger(turn) || turn < 1 || turn >= m.turn + (m.phase === 'finished' ? 1 : 0)) throw new GameError('turn_not_resolved', 409);
+    const { rows: snaps } = await this.db.query('SELECT number, snapshot FROM turns WHERE match_id=$1 AND number IN ($2, $3) ORDER BY number', [matchId, turn, turn + 1]);
+    const live = await loadStateCached(this.db, matchId);
+    const before = snaps.find(s => s.number === turn);
+    if (!before) throw new GameError('turn_not_found', 404);
+    const sBefore = stateFromJson(before.snapshot, live.map);
+    const afterRow = snaps.find(s => s.number === turn + 1);
+    const sAfter = afterRow ? stateFromJson(afterRow.snapshot, live.map) : live;
+    const match = await this.matchInfoFor(matchId, userId);
+    const wrap = (s: GameState): StateResponse => ({ match, view: playerView(this.b, s, playerId), orders: [], reserved: { gold: 0, wood: 0, iron: 0, crystal: 0 } });
+    return { turn, before: wrap(sBefore), after: wrap(sAfter), events: await this.getEvents(matchId, userId, turn) };
+  }
+
   // ---------------- Приказы ----------------
 
   async submitOrder(matchId: string, userId: number, req: SubmitOrderRequest): Promise<SubmitOrderResponse> {
@@ -490,6 +595,7 @@ export class GameService extends EventEmitter {
       await tx.query(`UPDATE turns SET status='resolved', resolved_at=now(), result_hash=$3, resolve_ms=$4 WHERE match_id=$1 AND number=$2`, [matchId, m.turn, stateHash(next), ms]);
       if (finished) {
         await tx.query(`UPDATE matches SET phase='finished', turn=$2, winner=$3, result=$4, deadline=NULL, updated_at=now() WHERE id=$1`, [matchId, next.turn, winner, JSON.stringify(next.mode.finished)]);
+        await this.recordResults(tx, matchId, winners);
       } else {
         await tx.query('INSERT INTO turns (id, match_id, number, status, snapshot) VALUES ($1,$2,$3,$4,$5)', [randomUUID(), matchId, next.turn, 'planning', JSON.stringify(stateToJson(next))]);
         const deadline = m.planning_seconds > 0 ? new Date(Date.now() + m.planning_seconds * 1000) : null;

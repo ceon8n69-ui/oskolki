@@ -7,6 +7,7 @@ import { Terrain } from '../../src/shared/types.ts';
 import { dist } from '../../src/engine/grid.ts';
 import { findPath } from '../../src/engine/path.ts';
 import { ApiError, OskolkiClient, TimelinePlayer, buildTimeline, lastPlayedTurn, markPlayed } from '../../src/client-sdk/index.ts';
+import type { MatchSummary } from '../../src/client-sdk/index.ts';
 import type { PlaybackStep } from '../../src/client-sdk/index.ts';
 
 const tg = (window as any).Telegram?.WebApp;
@@ -221,7 +222,7 @@ async function lobby() {
     return `Ход ${m.turn}${me?.ready ? ' · вы готовы' : ''}`;
   };
   app.innerHTML = `<div class="screen rooms">
-    <header class="rooms-head">${icon('crown', 'crest')}<h1>Осколки королевств</h1></header>
+    <header class="rooms-head">${icon('crown', 'crest')}<h1>Осколки королевств</h1><button class="btn sm" id="lbBtn">${icon('star')}Рейтинг</button></header>
     <details class="new-game" ${all.length ? '' : 'open'}><summary>${icon('plus')} Новая партия</summary>
       <div class="field"><label for="fac">Народ</label><select id="fac">${Object.entries(BALANCE.factions).map(([id, f]) => `<option value="${id}">${esc(f.name)}</option>`).join('')}</select></div>
       <div class="presets">${Object.keys(BALANCE.turnPresets).map(p => `<button class="btn preset" data-p="${p}"><b>${esc(PRESET_NAMES[p] ?? p)}</b><span>${esc(presetHint(p))}</span></button>`).join('')}</div>
@@ -238,6 +239,7 @@ async function lobby() {
         <button class="icon-btn" data-more="${m.id}" aria-label="Действия с партией">${icon('menu', 'fill')}</button></div>`).join('') || `<p class="empty">${roomTab === 'archive' ? 'Архив пуст' : 'Нет партий'}</p>`}</div>
   </div>`;
   app.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach(b => (b.onclick = () => ((roomTab = b.dataset.tab as RoomTab), lobby())));
+  document.getElementById('lbBtn')!.onclick = () => leaderboardScreen();
   app.querySelectorAll<HTMLButtonElement>('[data-p]').forEach(b => (b.onclick = async () => {
     const vic = (document.getElementById('vic') as HTMLSelectElement).value;
     const tl = (document.getElementById('tl') as HTMLInputElement).value;
@@ -264,6 +266,18 @@ async function lobby() {
     const m = all.find(x => x.id === b.dataset.more)!;
     roomActions(m, lobby);
   }));
+}
+
+async function leaderboardScreen() {
+  const lb = await client.leaderboard().catch(() => null);
+  app.innerHTML = `<div class="screen rooms">
+    <header class="rooms-head"><button class="icon-btn" id="back" aria-label="К партиям">${icon('back')}</button><h1>Рейтинг</h1></header>
+    ${lb?.me ? `<div class="panel-card row-between"><b>Ваше место ${lb.me.place}</b><span>${lb.me.rating} · партий ${lb.me.games} · побед ${lb.me.wins}</span></div>` : '<div class="panel-card muted">Рейтинг появится после первой партии с другим игроком</div>'}
+    <div class="lb">${(lb?.top ?? []).map(r => `<div class="lb-row ${r.me ? 'me' : ''}"><span class="lb-place">${r.place}</span><b>${esc(r.name)}</b><span class="lb-r">${r.rating}</span><span class="muted">${r.wins}/${r.games}</span></div>`).join('') || '<p class="empty">Пока пусто</p>'}</div></div>`;
+  backStack.length = 0;
+  backStack.push(() => lobby());
+  syncBack();
+  document.getElementById('back')!.onclick = () => lobby();
 }
 
 function presetHint(p: string): string {
@@ -377,7 +391,9 @@ let moveTiles: { x: number; y: number; cost: number; embark?: boolean; disembark
 let targetIds = new Set<string>();
 let actionMode: 'move' | 'attack' | 'ability' = 'move';
 let attackPlan: { unitId: string; targetId: string; path: Coord[]; damage: number; counter: number; counterPossible: boolean; modifiers: { id: string; value: number }[]; warning: string } | null = null;
-type PanelKind = 'research' | 'cities' | 'army' | 'commander' | 'diplomacy' | 'log' | 'menu' | 'economy' | null;
+type PanelKind = 'research' | 'cities' | 'army' | 'commander' | 'diplomacy' | 'log' | 'menu' | 'economy' | 'results' | null;
+let summary: MatchSummary | null = null;
+let replayTurn = 1;
 let panel: PanelKind = null;
 let panelFocus: string | null = null;
 let markers: { id: number; playerId: string; x: number; y: number; label: string; shared: boolean }[] = [];
@@ -451,7 +467,10 @@ async function gameScreen() {
     logEvents(ev);
     markPlayed(st.match.id, st.view.turn - 1);
   }
+  summary = null;
+  replayTurn = Math.max(1, st.view.turn - 1);
   renderAll();
+  if (st.match.phase === 'finished') openPanel('results');
   requestAnimationFrame(frame);
   if (hudTimer) clearInterval(hudTimer);
   // Раз в секунду — только таймер и готовность; панели и карточка не перерисовываются.
@@ -554,7 +573,11 @@ function renderStatus() {
   if (!st || !el) return;
   const left = st.match.deadline ? Math.max(0, Math.round((Date.parse(st.match.deadline) - Date.now()) / 1000)) : null;
   const time = left === null ? '' : left > 3600 ? `${Math.floor(left / 3600)} ч ${Math.floor((left % 3600) / 60)} м` : `${Math.floor(left / 60)}:${String(left % 60).padStart(2, '0')}`;
-  const { humans, ready } = myMatchState();
+  const { humans, ready, out } = myMatchState();
+  if (st.match.phase === 'finished' || out) {
+    el.innerHTML = `<span>${st.match.phase === 'finished' ? 'Партия завершена' : 'Вы выбыли'}</span>`;
+    return;
+  }
   el.innerHTML = `${time ? `<span>${icon('clock')}${time}</span>` : ''}<span class="${ready === humans.length ? 'ok' : ''}">Готовы ${ready}/${humans.length}</span>`;
 }
 
@@ -931,7 +954,10 @@ function positionCtx() {
 // ---------- выдвижные панели ----------
 function openPanel(k: PanelKind) {
   if (panel === k) return closePanel();
-  if (!panel) {
+  if (k === 'results' && client.state?.match.phase === 'finished' && !summary) {
+    void client.summary(client.state.match.id).then(x => ((summary = x), panel === 'results' && renderPanel())).catch(() => null);
+  }
+  if (!backStack.includes(closePanel)) {
     backStack.push(closePanel);
     syncBack();
   }
@@ -1072,6 +1098,7 @@ function renderPanel() {
       <button class="btn wide" data-go="diplomacy">${icon('users')}Дипломатия</button>
       <button class="btn wide" id="mSupply">${icon('shield')}Снабжение: ${supplyLayer ? 'показано' : 'скрыто'}</button>
       <button class="btn wide" data-go="log">${icon('archive')}Журнал</button>
+      ${st.view.turn > 1 || st.match.phase === 'finished' ? `<button class="btn wide" data-go="results">${icon('clock')}${st.match.phase === 'finished' ? 'Итоги и повтор' : 'Повтор ходов'}</button>` : ''}
       <button class="btn wide" id="mRooms">${icon('back')}Мои партии</button>
       ${st.match.phase !== 'finished' && !out ? `<button class="btn wide danger-text" id="mSurrender">${icon('flag')}Сдаться</button>` : ''}</div>`;
   } else if (panel === 'commander') {
@@ -1105,6 +1132,21 @@ function renderPanel() {
         ${outgoing ? `<div class="muted">Ждёт ответа: ${SN[t!.proposal!.status]}</div>` : ''}
         ${p.eliminated ? '' : `<div class="btn-row wrap">${status === 'war' ? `<button class="btn sm" data-dprop="${p.id}" data-st="truce">Перемирие</button>` : ''}${status !== 'alliance' && st.view.mode.alliances ? `<button class="btn sm" data-dprop="${p.id}" data-st="alliance">Союз</button>` : ''}${status !== 'war' && !t?.pending ? `<button class="btn sm danger-text" data-dbrk="${p.id}">Разорвать</button>` : ''}</div>`}</div>`;
     }).join('');
+  } else if (panel === 'results') {
+    const finished = st.match.phase === 'finished';
+    const last = finished ? st.match.turn - 0 : st.view.turn - 1;
+    const maxTurn = Math.max(1, finished ? (summary?.turns ?? st.view.turn - 1) : st.view.turn - 1);
+    replayTurn = Math.min(Math.max(1, replayTurn), maxTurn);
+    void last;
+    title = finished ? 'Итоги партии' : 'Повтор ходов';
+    const reasonText: Record<string, string> = { elimination: 'остался один', capitals: 'захват столиц', influence_turn_limit: 'очки влияния к лимиту ходов', last_standing: 'остался один' };
+    body = `${finished && summary ? `<div class="block"><div class="row-between"><b>${summary.winners.includes(me.id) ? 'Победа' : summary.winners.length ? 'Поражение' : 'Ничья'}</b><span class="muted">${summary.turns} ход. · ${esc(reasonText[summary.reason ?? ''] ?? summary.reason ?? '')}</span></div></div>
+      ${summary.players.map(p => `<div class="item"><div class="grow"><b><span class="dot" style="background:${p.color}"></span>${esc(p.name)}</b>${summary!.winners.includes(p.id) ? ' <span class="tag ok">победа</span>' : p.surrendered ? ' <span class="tag">сдался</span>' : ''}
+        <div class="muted">Городов ${p.cities} · отрядов ${p.units} · захвачено ${p.captured} · потерь ${p.lost} · технологий ${p.techs}${p.score !== null && st.view.mode.victory === 'influence' ? ` · влияние ${p.score}` : ''}</div></div>
+        ${p.rating?.rated ? `<span class="tag ${p.rating.after >= p.rating.before ? 'ok' : 'war'}">${p.rating.after} (${p.rating.after >= p.rating.before ? '+' : ''}${p.rating.after - p.rating.before})</span>` : ''}</div>`).join('')}` : ''}
+      <h4>Повтор хода</h4>
+      <div class="row-between"><button class="btn sm" id="rpPrev" ${replayTurn <= 1 ? 'disabled' : ''} aria-label="Предыдущий ход">${icon('back')}</button><b>Ход ${replayTurn} из ${maxTurn}</b><button class="btn sm" id="rpNext" ${replayTurn >= maxTurn ? 'disabled' : ''} aria-label="Следующий ход">${icon('back', 'flip')}</button></div>
+      <button class="btn gold wide" id="rpPlay">Показать ход ${replayTurn}</button>`;
   } else if (panel === 'log') {
     title = 'Журнал';
     body = `<div class="log">${logLines.slice(-120).reverse().map(esc).join('<br>') || 'Пусто'}</div>`;
@@ -1146,6 +1188,17 @@ function renderPanel() {
   all<HTMLButtonElement>('[data-dacc]').forEach(bt => (bt.onclick = () => submit(client.diplomacy(bt.dataset.dacc!, 'accept'))));
   all<HTMLButtonElement>('[data-ddec]').forEach(bt => (bt.onclick = () => submit(client.diplomacy(bt.dataset.ddec!, 'decline'))));
   all<HTMLButtonElement>('[data-dbrk]').forEach(bt => (bt.onclick = async () => (await confirmDialog('Разорвать договор?', `Война начнётся через ${BALANCE.diplomacy.breakWarningTurns} хода`, 'Разорвать')) && submit(client.diplomacy(bt.dataset.dbrk!, 'break'))));
+  const rpp = document.getElementById('rpPrev');
+  if (rpp) rpp.onclick = () => ((replayTurn--), renderPanel());
+  const rpn = document.getElementById('rpNext');
+  if (rpn) rpn.onclick = () => ((replayTurn++), renderPanel());
+  const rpl = document.getElementById('rpPlay');
+  if (rpl) rpl.onclick = async () => {
+    const r = await client.replay(st.match.id, replayTurn).catch(e => (toast(errText(e)), null));
+    if (!r) return;
+    closePanel();
+    startReplay(r.turn, r.events, r.before, r.after);
+  };
   const ms = document.getElementById('mSupply');
   if (ms) ms.onclick = () => ((supplyLayer = !supplyLayer), renderPanel());
   const mr = document.getElementById('mRooms');
@@ -1929,6 +1982,21 @@ function startPlayback(turn: number, events: StoredEvent[], before: StateRespons
   const focus = player.timeline.steps.find(s => s.important && s.focus);
   if (focus?.focus) cam = { ...cam, x: focus.focus.x, y: focus.focus.y };
   renderHud();
+}
+
+/** Повтор прошлого хода: та же шкала анимаций, без записи в журнал. */
+function startReplay(turn: number, events: StoredEvent[], before: StateResponse, after: StateResponse) {
+  selected = null;
+  selectedCity = null;
+  attackPlan = null;
+  targetIds = new Set();
+  moveTiles = [];
+  playback = { before, after, events };
+  player = new TimelinePlayer(buildTimeline(events, after.view.me.id, { reducedMotion }));
+  const focus = player.timeline.steps.find(s => s.important && s.focus);
+  if (focus?.focus) cam = { ...cam, x: focus.focus.x, y: focus.focus.y };
+  toast(`Повтор хода ${turn}`);
+  renderAll();
 }
 
 function logEvents(events: StoredEvent[], turn?: number) {

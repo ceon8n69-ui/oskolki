@@ -205,3 +205,13 @@ body.tut-on .goal, body.tut-on .status, body.tut-on .mini-btn, body.tut-on #mini
 .tut-pulse { animation: tutpulse 1.2s ease-in-out infinite; }
 @keyframes tutpulse { 50% { box-shadow: 0 0 0 4px var(--gold), 0 0 18px var(--gold); } }
 @media (prefers-reduced-motion: reduce) { .tut-pulse { animation: none; box-shadow: 0 0 0 3px var(--gold); } }
+
+/* Рейтинг */
+.rooms-head h1 { flex: 1; }
+.rooms-head .btn { min-height: 40px; }
+.lb { display: flex; flex-direction: column; gap: 6px; }
+.lb-row { display: flex; align-items: center; gap: 10px; min-height: 48px; padding: 6px 12px; border-radius: 12px; background: var(--ivory); color: var(--ink); }
+.lb-row.me { box-shadow: 0 0 0 2px var(--gold); }
+.lb-place { width: 28px; font-weight: 800; color: var(--navy); }
+.lb-row b { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.lb-r { font-weight: 800; }
