@@ -26,6 +26,7 @@ export class Shop {
   async createInvoice(userId: number, itemId: string, bot: TelegramBot | null): Promise<{ link: string }> {
     const item = shopItem(itemId);
     if (!item) throw new GameError('unknown_item', 404);
+    if (!item.stars) throw new GameError('reward_only', 409);
     if (!bot) throw new GameError('payments_unavailable', 503);
     const { rows } = await this.db.query('SELECT 1 FROM user_items WHERE user_id=$1 AND item=$2', [userId, itemId]);
     if (rows.length) throw new GameError('already_owned', 409);
@@ -47,6 +48,7 @@ export class Shop {
     const p = this.parse(q.invoice_payload);
     if (!p) return { ok: false, error: 'Товар не найден' };
     const item = shopItem(p.item)!;
+    if (!item.stars) return { ok: false, error: 'Товар не продаётся' };
     if (q.currency !== 'XTR' || q.total_amount !== item.stars) return { ok: false, error: 'Цена изменилась, откройте лавку заново' };
     const { rows: [u] } = await this.db.query('SELECT telegram_id FROM users WHERE id=$1', [p.userId]);
     if (!u || Number(u.telegram_id) !== q.from.id) return { ok: false, error: 'Оплата не для этого аккаунта' };

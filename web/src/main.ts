@@ -1,4 +1,6 @@
 import { loadLiveArt, drawLiveArtIso } from './live-art.ts';
+import { renderTechTree } from './techtree.ts';
+import { loadTechAtlas, factionIcon } from './tech-icons.ts';
 // Клиент: 2.5D-изометрия на Canvas 2D (рельеф с высотой, спрайты из web/art), без расчёта правил — только данные сервера.
 import { BALANCE } from '../../src/shared/balance.ts';
 import type { MatchInfo, StateResponse, ViewUnit } from '../../src/shared/protocol.ts';
@@ -47,6 +49,7 @@ const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;
 
 async function boot() {
   void loadLiveArt();
+  void loadTechAtlas();
   tg?.ready?.();
   tg?.expand?.();
   // Свайп по карте не должен сворачивать мини-приложение (Telegram Bot API 7.7+).
@@ -121,7 +124,29 @@ const ICONS: Record<string, string> = {
   users: '<circle cx="9" cy="8" r="3.5"/><path d="M2.5 20c.6-4 3.3-6 6.5-6s5.9 2 6.5 6M16 4.5a3.5 3.5 0 0 1 0 7M18 14c2 .7 3.2 2.6 3.5 6"/>',
   archive: '<path d="M3 5h18v4H3zM5 9v10h14V9M10 13h4"/>',
   target: '<circle cx="12" cy="12" r="8"/><circle cx="12" cy="12" r="3.5"/>',
+  share: '<path d="M12 15V3M7.5 7.5 12 3l4.5 4.5"/><path d="M5 12v7a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2v-7"/>',
+  gift: '<path d="M3 9h18v4H3zM5 13v8h14v-8M12 9v12"/><path d="M12 9c-2-3-6-4-6-1.5S10 9 12 9zM12 9c2-3 6-4 6-1.5S14 9 12 9z"/>',
+  cup: '<path d="M7 4h10v5a5 5 0 0 1-10 0zM7 6H4a3 3 0 0 0 3 4M17 6h3a3 3 0 0 1-3 4M12 14v3M8 21h8M9 21l1-4h4l1 4"/>',
+  laurel: '<path d="M12 21c-4-2-7-6-7-11M12 21c4-2 7-6 7-11"/><path d="M5 10c1 0 2 1 2 2M5 14c1-.5 2.5 0 3 1M19 10c-1 0-2 1-2 2M19 14c-1-.5-2.5 0-3 1M6.5 6.5c1 .5 1.5 1.5 1.5 2.5M17.5 6.5c-1 .5-1.5 1.5-1.5 2.5"/>',
+  horn: '<path d="M3 10l12-5v14L3 14z"/><path d="M15 8c3 0 5 2 5 4s-2 4-5 4M6 14l1 5h3l-1-4"/>',
 };
+const BADGE_ICON: Record<string, [string, string]> = { badge_champion: ['cup', 'Кубок чемпиона'], badge_laurel: ['laurel', 'Лавровый венок'], badge_crown: ['crown', 'Корона'], badge_herald: ['horn', 'Глашатай'] };
+const badgeHtml = (ids: string[]) => ids.map(b => (BADGE_ICON[b] ? `<span class="badge-ic" title="${BADGE_ICON[b][1]}">${icon(BADGE_ICON[b][0], b === 'badge_crown' ? 'fill' : '')}</span>` : '')).join('');
+
+/** Поделиться: подготовленное сообщение Telegram (карточка с кнопкой), иначе окно «Поделиться» со ссылкой. */
+async function shareFlow(kind: 'invite' | 'result' | 'referral', matchId?: string) {
+  const r = await client.share(kind, matchId).catch(e => (toast(errText(e)), null));
+  if (!r) return;
+  if (r.preparedId && tg?.shareMessage && (!tg.isVersionAtLeast || tg.isVersionAtLeast('8.0'))) {
+    tg.shareMessage(r.preparedId, (sent: boolean) => sent && toast('Отправлено'));
+    return;
+  }
+  const url = `https://t.me/share/url?url=${encodeURIComponent(r.url)}&text=${encodeURIComponent(r.text)}`;
+  if (tg?.openTelegramLink) tg.openTelegramLink(url);
+  else if ((navigator as any).share) (navigator as any).share({ text: r.text, url: r.url }).catch(() => {});
+  else navigator.clipboard?.writeText(`${r.text} ${r.url}`).then(() => toast('Ссылка скопирована'));
+}
+document.addEventListener('visibilitychange', () => client.setVisible(document.visibilityState === 'visible'));
 const icon = (k: string, cls = '') => `<svg class="ic ${cls}" viewBox="0 0 24 24" aria-hidden="true">${ICONS[k] ?? ''}</svg>`;
 const RES_ICON: Record<string, string> = {
   gold: '<svg class="res" viewBox="0 0 20 20" aria-hidden="true"><circle cx="10" cy="10" r="8" fill="#f2b33d" stroke="#b77b12" stroke-width="1.5"/><circle cx="10" cy="10" r="4.5" fill="none" stroke="#b77b12" stroke-width="1.2"/></svg>',
@@ -131,6 +156,14 @@ const RES_ICON: Record<string, string> = {
   knowledge: '<svg class="res" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2l2.2 5.3 5.8.5-4.4 3.8 1.3 5.6L10 14.3l-4.9 2.9 1.3-5.6L2 7.8l5.8-.5z" fill="#c7a6ff" stroke="#6f4ab0" stroke-width="1.1"/></svg>',
   command: '<svg class="res" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 7l3.5 3L10 4l3.5 6L17 7l-1.5 9h-11z" fill="#f2b33d" stroke="#b77b12" stroke-width="1.2"/></svg>',
 };
+let pickedFaction = (() => {
+  try {
+    const f = localStorage.getItem('oskolki.faction');
+    return f && BALANCE.factions[f] ? f : 'union';
+  } catch {
+    return 'union';
+  }
+})();
 const PRESET_NAMES: Record<string, string> = { tutorial: 'Обучение', quick: 'Быстрая', vsbot: 'Против бота', async: 'Асинхронная', campaign: 'Кампания', conquest: 'Завоевание', islands: 'Архипелаг' };
 const RANKS = ['Новобранец', 'Ветеран', 'Элита'];
 const TERRAIN_RU: Record<number, string> = { 0: 'Глубокая вода', 1: 'Мелководье', 2: 'Равнина', 3: 'Лес', 4: 'Холмы', 5: 'Горы' };
@@ -224,7 +257,9 @@ async function lobby() {
   app.innerHTML = `<div class="screen rooms">
     <header class="rooms-head">${icon('crown', 'crest')}<h1>Осколки королевств</h1><button class="btn sm hb" id="shopBtn" aria-label="Лавка">${icon('crown')}<span>Лавка</span></button><button class="btn sm hb" id="lbBtn" aria-label="Рейтинг">${icon('star')}<span>Рейтинг</span></button></header>
     <details class="new-game" ${all.length ? '' : 'open'}><summary>${icon('plus')} Новая партия</summary>
-      <div class="field"><label for="fac">Народ</label><select id="fac">${Object.entries(BALANCE.factions).map(([id, f]) => `<option value="${id}">${esc(f.name)}</option>`).join('')}</select></div>
+      <div class="field"><label>Народ</label><input type="hidden" id="fac" value="${esc(pickedFaction)}">
+        <div class="fac-row" role="radiogroup">${Object.entries(BALANCE.factions).map(([id, f]) => `<button class="fac ${id === pickedFaction ? 'on' : ''}" role="radio" aria-checked="${id === pickedFaction}" data-fac="${id}" style="--c:${f.color}">${factionIcon(id, 'tg')}<span>${esc(f.name)}</span></button>`).join('')}</div>
+        <div class="fac-info muted" id="facInfo">${esc(BALANCE.factions[pickedFaction].mechanic)}</div></div>
       <div class="presets">${Object.keys(BALANCE.turnPresets).map(p => `<button class="btn preset" data-p="${p}"><b>${esc(PRESET_NAMES[p] ?? p)}</b><span>${esc(presetHint(p))}</span></button>`).join('')}</div>
       <details class="more"><summary>Условия</summary>
         <div class="field"><label for="vic">Победа</label><select id="vic"><option value="" selected>По пресету</option>${Object.entries(BALANCE.victoryModes).map(([id, v]) => `<option value="${id}">${esc(v.name)}</option>`).join('')}</select></div>
@@ -240,13 +275,23 @@ async function lobby() {
   </div>`;
   app.querySelectorAll<HTMLButtonElement>('[data-tab]').forEach(b => (b.onclick = () => ((roomTab = b.dataset.tab as RoomTab), lobby())));
   document.getElementById('lbBtn')!.onclick = () => leaderboardScreen();
+  app.querySelectorAll<HTMLButtonElement>('[data-fac]').forEach(b => (b.onclick = () => {
+    pickedFaction = b.dataset.fac!;
+    try { localStorage.setItem('oskolki.faction', pickedFaction); } catch { /* недоступно */ }
+    (document.getElementById('fac') as HTMLInputElement).value = pickedFaction;
+    app.querySelectorAll<HTMLButtonElement>('[data-fac]').forEach(x => {
+      x.classList.toggle('on', x === b);
+      x.setAttribute('aria-checked', String(x === b));
+    });
+    document.getElementById('facInfo')!.textContent = BALANCE.factions[pickedFaction].mechanic;
+  }));
   document.getElementById('shopBtn')!.onclick = () => shopScreen();
   app.querySelectorAll<HTMLButtonElement>('[data-p]').forEach(b => (b.onclick = async () => {
     const vic = (document.getElementById('vic') as HTMLSelectElement).value;
     const tl = (document.getElementById('tl') as HTMLInputElement).value;
     try {
       b.disabled = true;
-      const m = await client.createMatch(b.dataset.p!, (document.getElementById('fac') as HTMLSelectElement).value, { ...(vic ? { victory: vic } : {}), ...(tl ? { turnLimit: Number(tl) } : {}) });
+      const m = await client.createMatch(b.dataset.p!, (document.getElementById('fac') as HTMLInputElement).value, { ...(vic ? { victory: vic } : {}), ...(tl ? { turnLimit: Number(tl) } : {}) });
       openMatch(m.id);
     } catch (e) {
       b.disabled = false;
@@ -255,7 +300,7 @@ async function lobby() {
   }));
   document.getElementById('join')!.onclick = async () => {
     try {
-      const m = await client.joinMatch((document.getElementById('code') as HTMLInputElement).value.trim(), (document.getElementById('fac') as HTMLSelectElement).value);
+      const m = await client.joinMatch((document.getElementById('code') as HTMLInputElement).value.trim(), (document.getElementById('fac') as HTMLInputElement).value);
       openMatch(m.id);
     } catch (e) {
       toast(errText(e));
@@ -271,10 +316,15 @@ async function lobby() {
 
 async function leaderboardScreen() {
   const lb = await client.leaderboard().catch(() => null);
+  const days = lb?.season ? Math.max(0, Math.ceil((Date.parse(lb.season.endsAt) - Date.now()) / 86400000)) : 0;
   app.innerHTML = `<div class="screen rooms">
     <header class="rooms-head"><button class="icon-btn" id="back" aria-label="К партиям">${icon('back')}</button><h1>Рейтинг</h1></header>
-    ${lb?.me ? `<div class="panel-card row-between"><b>Ваше место ${lb.me.place}</b><span>${lb.me.rating} · партий ${lb.me.games} · побед ${lb.me.wins}</span></div>` : '<div class="panel-card muted">Рейтинг появится после первой партии с другим игроком</div>'}
-    <div class="lb">${(lb?.top ?? []).map(r => `<div class="lb-row ${r.me ? 'me' : ''}"><span class="lb-place">${r.place}</span><b>${r.crown ? `<span class="crown" title="Корона">${icon('crown', 'fill')}</span>` : ''}${esc(r.name)}</b><span class="lb-r">${r.rating}</span><span class="muted">${r.wins}/${r.games}</span></div>`).join('') || '<p class="empty">Пока пусто</p>'}</div></div>`;
+    ${lb?.season ? `<div class="season"><div><b>${esc(lb.season.name)}</b><div class="muted">До конца ${days} дн. · награды: кубок за 1-е место, венок за десятку, знамя ветерана за 5 партий</div></div></div>` : ''}
+    ${lb?.me && lb.me.games > 0 ? `<div class="panel-card row-between"><b>Ваше место ${lb.me.place}</b><span>${lb.me.rating} · партий ${lb.me.games} · побед ${lb.me.wins}</span></div>` : '<div class="panel-card muted">Рейтинг появится после первой партии с другим игроком</div>'}
+    <div class="lb">${(lb?.top ?? []).map(r => `<div class="lb-row ${r.me ? 'me' : ''}"><span class="lb-place">${r.place}</span><b>${badgeHtml(r.badges ?? (r.crown ? ['badge_crown'] : []))}${esc(r.name)}</b><span class="lb-r">${r.rating}</span><span class="muted">${r.wins}/${r.games}</span></div>`).join('') || '<p class="empty">Пока пусто</p>'}</div>
+    ${lb?.previous?.length ? `<h4 class="sec-h">Прошлый сезон</h4><div class="lb">${lb.previous.map(p => `<div class="lb-row"><span class="lb-place">${p.place}</span><b>${p.place === 1 ? badgeHtml(['badge_champion']) : ''}${esc(p.name)}</b><span class="lb-r">${p.rating}</span><span></span></div>`).join('')}</div>` : ''}
+    <button class="btn wide invite-btn" id="lbInvite">${icon('gift')}Позвать друга — знамя обоим</button></div>`;
+  document.getElementById('lbInvite')!.onclick = () => void shareFlow('referral');
   backStack.length = 0;
   backStack.push(() => lobby());
   syncBack();
@@ -282,22 +332,25 @@ async function leaderboardScreen() {
 }
 
 async function shopScreen() {
-  const data = await client.shop().catch(e => (toast(errText(e)), null));
+  const [data, ref] = await Promise.all([client.shop().catch(e => (toast(errText(e)), null)), client.referral().catch(() => null)]);
   if (!data) return lobby();
   app.innerHTML = `<div class="screen rooms">
     <header class="rooms-head"><button class="icon-btn" id="back" aria-label="К партиям">${icon('back')}</button><h1>Лавка</h1></header>
     <div class="panel-card muted">Только внешний вид — на силу в игре не влияет. Оплата — Telegram Stars.</div>
+    ${ref ? `<div class="invite-card"><div class="swatch" style="background:#1f8fb8">${icon('gift')}</div><div class="grow"><b>Позовите друга</b><div class="muted">Когда друг доиграет первую партию, оба получите «Знамя побратимов». ${ref.heraldAt} друга — знак «Глашатай». Пришли: ${ref.invited} · доиграли: ${ref.finished}</div></div><button class="btn gold sm" id="refShare">${icon('share')}Позвать</button></div>` : ''}
     <div class="shop">${data.items.map(i => {
       const equipped = i.kind === 'color' && data.equippedColor === i.id;
-      const action = !i.owned ? `<button class="btn gold sm" data-buy="${i.id}">★ ${i.stars}</button>`
+      const action = !i.owned && !i.stars ? '<span class="tag">Награда</span>' : !i.owned ? `<button class="btn gold sm" data-buy="${i.id}">★ ${i.stars}</button>`
         : i.kind === 'color' ? `<button class="btn sm" data-equip="${equipped ? '' : i.id}">${equipped ? 'Снять' : 'Выбрать'}</button>` : '<span class="tag ok">Куплено</span>';
-      return `<div class="shop-item ${equipped ? 'on' : ''}"><div class="swatch" style="${i.color ? `background:${i.color}` : ''}">${i.kind === 'badge' ? icon('crown', 'fill') : ''}</div>
-        <div class="grow"><b>${esc(i.name)}</b><div class="muted">${esc(i.description)}</div></div>${action}</div>`;
+      return `<div class="shop-item ${equipped ? 'on' : ''}"><div class="swatch" style="${i.color ? `background:${i.color}` : ''}">${i.kind === 'badge' ? icon(BADGE_ICON[i.id]?.[0] ?? 'crown', i.id === 'badge_crown' ? 'fill' : '') : ''}</div>
+        <div class="grow"><b>${esc(i.name)}</b><div class="muted">${esc(i.reward && !i.owned ? `Награда: ${i.reward}` : i.description)}</div></div>${action}</div>`;
     }).join('')}</div></div>`;
   backStack.length = 0;
   backStack.push(() => lobby());
   syncBack();
   document.getElementById('back')!.onclick = () => lobby();
+  const rs = document.getElementById('refShare');
+  if (rs) rs.onclick = () => void shareFlow('referral');
   app.querySelectorAll<HTMLButtonElement>('[data-buy]').forEach(b => (b.onclick = async () => {
     if (!tg?.openInvoice) return toast('Оплата доступна в Telegram');
     try {
@@ -379,7 +432,7 @@ async function openMatch(id: string) {
     backStack.push(back);
     syncBack();
     document.getElementById('back')!.onclick = back;
-    document.getElementById('share')!.onclick = () => (tg?.openTelegramLink ? tg.openTelegramLink(`https://t.me/share/url?url=${encodeURIComponent(info.inviteLink)}`) : navigator.clipboard?.writeText(info.inviteLink).then(() => toast('Ссылка скопирована')));
+    document.getElementById('share')!.onclick = () => void shareFlow('invite', info.id);
     const ab = document.getElementById('addBot');
     if (ab) ab.onclick = () => client.addBots(id, 1).then(() => openMatch(id)).catch(e => toast(errText(e)));
     (document.getElementById('fac2') as HTMLSelectElement).onchange = e => client.setFaction(id, (e.target as HTMLSelectElement).value).then(() => toast('Народ изменён')).catch(err => toast(errText(err)));
@@ -680,7 +733,7 @@ const TUT_STEPS: TutStep[] = [
   { title: 'Атакуйте разведчика', text: 'Красная клетка — цель. Нажмите на неё, проверьте прогноз и нажмите «Атаковать».', done: st => st.orders.some(o => (o.order as any).mode === 'attack') || st.view.turn > 1, target: st => st.view.units.find(u => u.owner !== st.view.me.id && u.type === 'scout') ?? null },
   { title: 'Завершите ход', text: 'Все игроки отдают приказы одновременно. «Завершить ход» — и сервер рассчитает результат.', done: st => st.view.turn >= 2, nav: 'nMain' },
   { title: 'Наймите отряд', text: 'Откройте «Города» и выберите отряд в разделе «Нанять».', done: st => st.orders.some(o => o.order.kind === 'recruit') || st.view.cities.some(c => c.owner === st.view.me.id && c.queue.length > 0), nav: 'nCities' },
-  { title: 'Выберите исследование', text: 'Откройте «Исследования» и нажмите «Исследовать» у любой технологии.', done: st => st.orders.some(o => o.order.kind === 'research') || st.view.me.researchQueue.length > 0 || st.view.me.researched.length > 0, nav: 'nResearch' },
+  { title: 'Выберите исследование', text: 'Откройте «Исследования», нажмите на технологию у эмблемы народа и выберите «Исследовать».', done: st => st.orders.some(o => o.order.kind === 'research') || st.view.me.researchQueue.length > 0 || st.view.me.researched.length > 0, nav: 'nResearch' },
   { title: 'Разведайте округу', text: 'Выберите разведчика и нажмите на дальнюю разведанную клетку — он проложит маршрут на несколько ходов.', done: st => { const s = myUnitOf(st, 'scout'); return !!s && (st.orders.some(o => o.subject === `unit:${s.id}` && (o.order as any).path?.length) || !!s.route?.path?.length); }, target: st => myUnitOf(st, 'scout') },
   { title: 'Завершите ход', text: 'Готово — посмотрите, как ход разыгрывается на карте.', done: st => st.view.turn >= 3, nav: 'nMain' },
 ];
@@ -1072,23 +1125,8 @@ function renderPanel() {
   let title = '';
   let body = '';
   if (panel === 'research') {
-    const ord = st.orders.find(o => o.subject === 'research');
-    const queue: string[] = ord ? (ord.order as any).queue : me.researchQueue;
-    const branches: Record<string, string> = { economy: 'Хозяйство', military: 'Военное дело', movement: 'Передвижение', knowledge: 'Знания', legacy: 'Наследие народа' };
-    const techs = Object.entries(BALANCE.techs).filter(([, t]) => !t.faction || t.faction === me.faction);
-    title = `Исследования`;
-    body = `<div class="summary">${RES_ICON.knowledge}${me.researchProgress} · +${st.view.income.knowledge} за ход${queue.length ? ` · очередь: ${queue.map(t => esc(BALANCE.techs[t].name)).join(' → ')}` : ''}</div>
-      ${queue.length ? '<button class="btn sm" id="rClear">Очистить очередь</button>' : ''}
-      ${Object.entries(branches).map(([br, name]) => `<h4>${name}</h4>` + techs.filter(([, t]) => t.branch === br).map(([id, t]) => {
-        const done = me.researched.includes(id);
-        const inQ = queue.includes(id);
-        const missing = t.requires.filter(r => !me.researched.includes(r) && !queue.includes(r));
-        const excluded = (t.excludes ?? []).filter(x => me.researched.includes(x) || queue.includes(x));
-        const opens = [...t.unlocksUnits.map(u => BALANCE.units[u].name), ...t.unlocksBuildings.map(x => BALANCE.buildings[x].name)];
-        const why = missing.length ? `Нужно: ${missing.map(r => BALANCE.techs[r].name).join(', ')}` : excluded.length ? `Исключено выбором «${excluded.map(x => BALANCE.techs[x].name).join(', ')}»` : '';
-        return `<div class="item ${done ? 'done' : ''}"><div><b>${esc(t.name)}</b><div class="muted">${esc([opens.length ? opens.join(', ') : '', modsText(t.modifiers)].filter(Boolean).join(' · '))}${why ? `<br><span class="why">${esc(why)}</span>` : ''}</div></div>
-          ${done ? `<span class="tag ok">${icon('check')}</span>` : inQ ? '<span class="tag">в очереди</span>' : `<button class="btn sm gold" data-t="${id}" ${why ? 'disabled' : ''}>Исследовать · ${t.cost}</button>`}</div>`;
-      }).join('')).join('')}`;
+    title = 'Исследования';
+    body = '';
   } else if (panel === 'cities') {
     const cities = st.view.cities.filter(c => c.owner === me.id).sort((a, b) => (a.id === panelFocus ? -1 : b.id === panelFocus ? 1 : 0));
     title = `Города · ${cities.length}`;
@@ -1183,6 +1221,7 @@ function renderPanel() {
       ${summary.players.map(p => `<div class="item"><div class="grow"><b><span class="dot" style="background:${p.color}"></span>${esc(p.name)}</b>${summary!.winners.includes(p.id) ? ' <span class="tag ok">победа</span>' : p.surrendered ? ' <span class="tag">сдался</span>' : ''}
         <div class="muted">Городов ${p.cities} · отрядов ${p.units} · захвачено ${p.captured} · потерь ${p.lost} · технологий ${p.techs}${p.score !== null && st.view.mode.victory === 'influence' ? ` · влияние ${p.score}` : ''}</div></div>
         ${p.rating?.rated ? `<span class="tag ${p.rating.after >= p.rating.before ? 'ok' : 'war'}">${p.rating.after} (${p.rating.after >= p.rating.before ? '+' : ''}${p.rating.after - p.rating.before})</span>` : ''}</div>`).join('')}` : ''}
+      ${finished && summary ? `<button class="btn wide" id="rShare">${icon('share')}Поделиться итогом</button>` : ''}
       <h4>Повтор хода</h4>
       <div class="row-between"><button class="btn sm" id="rpPrev" ${replayTurn <= 1 ? 'disabled' : ''} aria-label="Предыдущий ход">${icon('back')}</button><b>Ход ${replayTurn} из ${maxTurn}</b><button class="btn sm" id="rpNext" ${replayTurn >= maxTurn ? 'disabled' : ''} aria-label="Следующий ход">${icon('back', 'flip')}</button></div>
       <button class="btn gold wide" id="rpPlay">Показать ход ${replayTurn}</button>`;
@@ -1192,17 +1231,24 @@ function renderPanel() {
   }
   el.dataset.kind = panel;
   el.innerHTML = `<header class="drawer-head"><h2>${esc(title)}</h2><button class="icon-btn" id="pClose" aria-label="Закрыть">${icon('close')}</button></header><div class="drawer-body">${body}</div>`;
+  if (panel === 'research') {
+    const ord = st.orders.find(o => o.subject === 'research');
+    renderTechTree(el.querySelector<HTMLElement>('.drawer-body')!, {
+      faction: me.faction, researched: me.researched, queue: ord ? (ord.order as any).queue : me.researchQueue,
+      progress: me.researchProgress, income: st.view.income.knowledge, canAct: st.match.phase === 'planning' && !myMatchState().out,
+    }, {
+      setQueue: q => void submit(client.research(q)),
+      describe: id => {
+        const t = BALANCE.techs[id];
+        const opens = [...t.unlocksUnits.map(u => BALANCE.units[u].name), ...t.unlocksBuildings.map(x => BALANCE.buildings[x].name)].join(', ');
+        return { opens: esc(opens), effects: esc(modsText(t.modifiers)) };
+      },
+    });
+  }
   el.querySelector('.drawer-body')!.scrollTop = keepScroll;
   paintPortraits(el);
   document.getElementById('pClose')!.onclick = closePanel;
   const all = <T extends HTMLElement>(sel: string) => el.querySelectorAll<T>(sel);
-  all<HTMLButtonElement>('[data-t]').forEach(bt => (bt.onclick = () => {
-    const ord = st.orders.find(o => o.subject === 'research');
-    const queue: string[] = ord ? (ord.order as any).queue : me.researchQueue;
-    void submit(client.research([...queue, bt.dataset.t!]));
-  }));
-  const rc = document.getElementById('rClear');
-  if (rc) rc.onclick = () => submit(client.research([]));
   all<HTMLButtonElement>('[data-u]').forEach(bt => (bt.onclick = () => submit(client.recruit(bt.dataset.c!, bt.dataset.u!))));
   all<HTMLButtonElement>('[data-b]').forEach(bt => (bt.onclick = () => submit(client.construct(bt.dataset.c!, bt.dataset.b!))));
   all<HTMLButtonElement>('[data-spec]').forEach(bt => (bt.onclick = () => submit(client.specialize(bt.dataset.c!, bt.dataset.spec!))));
@@ -1227,6 +1273,8 @@ function renderPanel() {
   all<HTMLButtonElement>('[data-dacc]').forEach(bt => (bt.onclick = () => submit(client.diplomacy(bt.dataset.dacc!, 'accept'))));
   all<HTMLButtonElement>('[data-ddec]').forEach(bt => (bt.onclick = () => submit(client.diplomacy(bt.dataset.ddec!, 'decline'))));
   all<HTMLButtonElement>('[data-dbrk]').forEach(bt => (bt.onclick = async () => (await confirmDialog('Разорвать договор?', `Война начнётся через ${BALANCE.diplomacy.breakWarningTurns} хода`, 'Разорвать')) && submit(client.diplomacy(bt.dataset.dbrk!, 'break'))));
+  const rsh = document.getElementById('rShare');
+  if (rsh) rsh.onclick = () => void shareFlow('result', st.match.id);
   const rpp = document.getElementById('rpPrev');
   if (rpp) rpp.onclick = () => ((replayTurn--), renderPanel());
   const rpn = document.getElementById('rpNext');

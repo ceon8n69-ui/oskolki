@@ -92,6 +92,10 @@ export function attackValue(b: Balance, state: GameState, u: UnitState, target: 
     if (wd <= 1 && tr.coastAttackMul) push('coast', tr.coastAttackMul);
     else if (tr.inlandAttackMul && wd > (tr.inlandDistance ?? 3)) push('inland', tr.inlandAttackMul);
   }
+  // Степные ханства: натиск с равнины.
+  if (tr.plainsAttackMul && terrainAt(state.map, u.x, u.y) === Terrain.Plains) push('steppe_charge', tr.plainsAttackMul);
+  // Северные ярлы: ярость раненых (берсерк — при любой ране).
+  if (tr.woundedAttackMul && (hasAbility(b, u.type, 'berserk') ? u.hp < u.maxHp : u.hp * 2 <= u.maxHp)) push('fury', tr.woundedAttackMul);
   // Поддержка соседей и командира.
   if (friendsAdjacent(state, u).some(f => hasAbility(b, f.type, 'inspire'))) push('inspire', 1.1);
   const tac = commanderAura(b, state, u.owner, u, 'tactics');
@@ -119,6 +123,9 @@ export function defenseValue(b: Balance, state: GameState, u: UnitState, mods: M
     d *= v;
   };
   push('terrain', terrainRule(b, terrainAt(state.map, u.x, u.y)).defense);
+  const rough = traitsOf(b, state, u.owner).roughDefenseMul;
+  const ter = terrainAt(state.map, u.x, u.y);
+  if (rough && (ter === Terrain.Forest || ter === Terrain.Hills || ter === Terrain.Mountain)) push('rough_ground', rough);
   const city = state.cities.find(c => c.x === u.x && c.y === u.y && c.owner === u.owner);
   if (city) {
     let v = b.combat.cityDefense + techs(b, state, u.owner).cityDefenseBonus + cityBuildingEffect(b, city, 'cityDefense');

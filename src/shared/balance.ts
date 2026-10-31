@@ -16,7 +16,7 @@ export type Cost = { gold?: number; production?: number } & Partial<Materials>;
 export type UnitAbility =
   | 'zoc' | 'ignore_zoc' | 'cover' | 'knockback' | 'suppress' | 'build' | 'build_fort' | 'fast_build'
   | 'no_attack_after_move' | 'siege' | 'inspire' | 'forest_stride' | 'plant_forest' | 'heavy' | 'amphibious' | 'commander'
-  | 'naval' | 'transport' | 'incendiary' | 'build_obelisk';
+  | 'naval' | 'transport' | 'incendiary' | 'build_obelisk' | 'berserk';
 
 export interface UnitRule {
   name: string;
@@ -129,12 +129,22 @@ export interface FactionTraits {
   resonanceMul?: number;
   severedMul?: number;
   lootMul?: number;
+  // Степные ханства
+  plainsAttackMul?: number;
+  roughDefenseMul?: number;
+  /** Множитель золотой цены по классу отряда. */
+  classCostMul?: Record<string, number>;
+  // Северные ярлы
+  woundedAttackMul?: number;
+  healBonus?: number;
 }
 
 export interface FactionRule {
   name: string;
   color: string;
   startUnits: string[];
+  /** Технологии, известные с начала партии. */
+  startTechs?: string[];
   mechanic: string;
   weakness: string;
   traits: FactionTraits;

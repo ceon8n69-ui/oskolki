@@ -124,7 +124,8 @@ export function techs(b: Balance, state: GameState, owner: PlayerId): TechSummar
 /** Цена отряда для игрока (Горные кланы платят больше золота). */
 export function unitCost(b: Balance, state: GameState, owner: PlayerId, unitType: string): { gold: number; production: number } & Materials {
   const r = b.units[unitType].cost;
-  const mul = traitsOf(b, state, owner).costMul ?? 1;
+  const tr = traitsOf(b, state, owner);
+  const mul = (tr.costMul ?? 1) * (tr.classCostMul?.[b.units[unitType].class] ?? 1);
   return { gold: Math.ceil(r.gold * mul), production: r.production, wood: r.wood ?? 0, iron: r.iron ?? 0, crystal: r.crystal ?? 0 };
 }
 

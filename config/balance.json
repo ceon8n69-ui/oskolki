@@ -1,5 +1,5 @@
 {
-  "version": "balance-3.0.0",
+  "version": "balance-3.1.0",
   "map": {
     "chunkSize": 16,
     "presets": {
@@ -58,6 +58,10 @@
     "firebrand":    { "name": "Метатель огня",  "class": "ranged",   "hp": 9,  "attack": 3, "defense": 1, "move": 2, "range": 2, "vision": 2, "initiative": 1, "cost": { "gold": 12, "production": 8, "wood": 1 }, "upkeep": 2, "requires": "ash_fire", "faction": "ash", "xpOnKill": 2, "abilities": ["suppress", "incendiary"] },
     "runesmith":    { "name": "Рунный мастер",  "class": "engineer", "hp": 9,  "attack": 1, "defense": 2, "move": 2, "range": 1, "vision": 3, "initiative": 1, "cost": { "gold": 9,  "production": 6 }, "upkeep": 1, "requires": "ruins_runes", "faction": "ruins", "xpOnKill": 1, "abilities": ["build", "fast_build", "build_obelisk"] },
     "sentinel":     { "name": "Пробуждённый страж", "class": "shield", "hp": 16, "attack": 3, "defense": 4, "move": 1, "range": 1, "vision": 2, "initiative": 1, "cost": { "gold": 16, "production": 10, "iron": 1 }, "upkeep": 3, "requires": "ruins_golems", "faction": "ruins", "xpOnKill": 2, "abilities": ["zoc", "heavy", "cover"] },
+    "horse_archer": { "name": "Конный лучник", "class": "ranged", "hp": 10, "attack": 2, "defense": 1, "move": 3, "range": 2, "vision": 3, "initiative": 3, "cost": { "gold": 14, "production": 8, "wood": 1 }, "upkeep": 2, "requires": "steppe_horse_archers", "faction": "steppe", "xpOnKill": 2, "abilities": ["suppress", "ignore_zoc"] },
+    "khan_guard":   { "name": "Ханская гвардия", "class": "cavalry", "hp": 14, "attack": 4, "defense": 2, "move": 3, "range": 1, "vision": 3, "initiative": 4, "cost": { "gold": 20, "production": 12, "iron": 2 }, "upkeep": 3, "requires": "steppe_khan_guard", "faction": "steppe", "xpOnKill": 2, "abilities": ["ignore_zoc"], "bonusVs": { "ranged": 1.25, "siege": 1.5 } },
+    "berserker":    { "name": "Берсерк", "class": "infantry", "hp": 10, "attack": 3, "defense": 1, "move": 2, "range": 1, "vision": 2, "initiative": 3, "cost": { "gold": 13, "production": 7, "iron": 1 }, "upkeep": 2, "requires": "north_berserkers", "faction": "north", "xpOnKill": 2, "abilities": ["zoc", "berserk"] },
+    "huscarl":      { "name": "Хускарл", "class": "shield", "hp": 14, "attack": 2, "defense": 3, "move": 2, "range": 1, "vision": 2, "initiative": 2, "cost": { "gold": 13, "production": 8, "iron": 1 }, "upkeep": 2, "requires": "north_huscarls", "faction": "north", "xpOnKill": 2, "abilities": ["zoc", "cover", "knockback"] },
 
     "transport":    { "name": "Транспорт",      "class": "naval",    "hp": 10, "attack": 1, "defense": 2, "move": 4, "range": 1, "vision": 3, "initiative": 2, "cost": { "gold": 12, "production": 8 }, "upkeep": 1, "requires": "navigation", "faction": null, "xpOnKill": 1, "abilities": ["naval", "transport", "ignore_zoc"] },
     "warship":      { "name": "Боевой корабль", "class": "naval",    "hp": 14, "attack": 3, "defense": 2, "move": 4, "range": 2, "vision": 3, "initiative": 3, "cost": { "gold": 18, "production": 11, "wood": 1 }, "upkeep": 2, "requires": "naval_warfare", "faction": null, "xpOnKill": 2, "abilities": ["naval", "ignore_zoc", "suppress"], "bonusVs": { "naval": 1.25 } },
@@ -251,7 +255,19 @@
     "ruins_attunement":{ "name": "Настройка",       "branch": "legacy", "faction": "ruins", "cost": 12, "requires": ["ruins_runes"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "resonanceBonus": 0.1 } },
     "ruins_conduits":  { "name": "Проводники",      "branch": "legacy", "faction": "ruins", "cost": 12, "requires": [], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "obeliskLink": 3 } },
     "ruins_archive":   { "name": "Архив древних",   "branch": "legacy", "faction": "ruins", "cost": 12, "requires": ["academia"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "ruinsKnowledge": 1 } },
-    "ruins_wards":     { "name": "Охранные печати", "branch": "legacy", "faction": "ruins", "cost": 14, "requires": ["ruins_conduits"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "obeliskField": 1 } }
+    "ruins_wards":     { "name": "Охранные печати", "branch": "legacy", "faction": "ruins", "cost": 14, "requires": ["ruins_conduits"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "obeliskField": 1 } },
+    "steppe_saddles":       { "name": "Стремена",        "branch": "legacy", "faction": "steppe", "cost": 10, "requires": [], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "attackBonusClass": { "cavalry": 0.5 } } },
+    "steppe_yurts":         { "name": "Кочевья",         "branch": "legacy", "faction": "steppe", "cost": 10, "requires": [], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "supplyRadius": 1 } },
+    "steppe_horse_archers": { "name": "Конные лучники",  "branch": "legacy", "faction": "steppe", "cost": 12, "requires": ["archery"], "unlocksUnits": ["horse_archer"], "unlocksBuildings": [], "modifiers": {} },
+    "steppe_relay":         { "name": "Ямская почта",    "branch": "legacy", "faction": "steppe", "cost": 12, "requires": ["steppe_yurts"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "moveBonus": { "scout": 1 } } },
+    "steppe_khan_guard":    { "name": "Ханская гвардия", "branch": "legacy", "faction": "steppe", "cost": 16, "requires": ["steppe_saddles"], "unlocksUnits": ["khan_guard"], "unlocksBuildings": [], "modifiers": {} },
+    "steppe_tribute":       { "name": "Дань",            "branch": "legacy", "faction": "steppe", "cost": 14, "requires": ["trade"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "goldPerCity": 1 } },
+    "north_berserkers": { "name": "Берсерки",        "branch": "legacy", "faction": "north", "cost": 12, "requires": ["spearcraft"], "unlocksUnits": ["berserker"], "unlocksBuildings": [], "modifiers": {} },
+    "north_huscarls":   { "name": "Хускарлы",        "branch": "legacy", "faction": "north", "cost": 12, "requires": ["shields"], "unlocksUnits": ["huscarl"], "unlocksBuildings": [], "modifiers": {} },
+    "north_mead":       { "name": "Медовые залы",    "branch": "legacy", "faction": "north", "cost": 12, "requires": ["agriculture"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "healBonus": 1 } },
+    "north_sagas":      { "name": "Саги о героях",   "branch": "legacy", "faction": "north", "cost": 14, "requires": ["north_berserkers"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "xpMul": 1.25 } },
+    "north_longships":  { "name": "Ладьи",           "branch": "legacy", "faction": "north", "cost": 12, "requires": ["navigation"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "moveBonus": { "naval": 1 } } },
+    "north_frost":      { "name": "Закалка морозом", "branch": "legacy", "faction": "north", "cost": 14, "requires": ["north_mead"], "unlocksUnits": [], "unlocksBuildings": [], "modifiers": { "attackBonusClass": { "shield": 0.5 } } }
   },
   "factions": {
     "union": {
@@ -271,8 +287,8 @@
     "mountain": {
       "name": "Горные кланы", "color": "#8a6a3e", "startUnits": ["infantry", "scout"],
       "mechanic": "Холмы стоят 1 очко движения; строят укрепления (×1.3 к защите на клетке); отряды крепче.",
-      "weakness": "Отряды дороже на 15% золота; медленные. Обходите укрепления, бейте по коммуникациям.",
-      "traits": { "hillsCost": 1, "costMul": 1.15, "buildFort": true, "hpBonus": 1 },
+      "weakness": "Отряды дороже на 10% золота; медленные. Обходите укрепления, бейте по коммуникациям.",
+      "traits": { "hillsCost": 1, "costMul": 1.1, "buildFort": true, "hpBonus": 1 },
       "commander": { "name": "Тан", "abilities": ["rally", "siege_support"] }
     },
     "tide": {
@@ -295,6 +311,20 @@
       "weakness": "Зависимость от узлов: вне поля резонанса атака ×0.9. Обелиск разрушается, если на нём закончит ход противник, а разрыв цепочки отключает дальние узлы.",
       "traits": { "buildObelisk": true, "resonanceMul": 1.15, "severedMul": 0.9, "lootMul": 2 },
       "commander": { "name": "Хранитель знаний", "abilities": ["scout_pulse", "resonance_surge"] }
+    },
+    "steppe": {
+      "name": "Степные ханства", "color": "#c9a43a", "startUnits": ["infantry", "scout"], "startTechs": ["horsemanship"],
+      "mechanic": "Степной натиск: атака с равнины ×1.1. Кавалерия и разведчики дешевле на 20% золота; «Верховая езда» известна с начала.",
+      "weakness": "В лесу, на холмах и в горах защита ×0.85. Заманивайте всадников в пересечённую местность и ставьте копейщиков.",
+      "traits": { "plainsAttackMul": 1.1, "classCostMul": { "cavalry": 0.8, "scout": 0.8 }, "roughDefenseMul": 0.85 },
+      "commander": { "name": "Хан", "abilities": ["forced_march", "warcry"] }
+    },
+    "north": {
+      "name": "Северные ярлы", "color": "#6b7c8f", "startUnits": ["infantry", "scout"],
+      "mechanic": "Ярость: раненый отряд (здоровье не больше половины) атакует ×1.15, берсерк — при любой ране. Закалка: отряды лечатся на 1 больше.",
+      "weakness": "Стрелки и осадные орудия дороже на 25% золота. Добивайте раненых издалека и не давайте им отдыхать.",
+      "traits": { "woundedAttackMul": 1.15, "healBonus": 1, "classCostMul": { "ranged": 1.25, "siege": 1.25 } },
+      "commander": { "name": "Ярл", "abilities": ["rally", "warcry"] }
     }
   },
   "effects": {
@@ -320,7 +350,11 @@
     "resonance":     { "name": "Резонанс",      "icon": "obelisk",  "source": "Хранители руин: связанный обелиск в радиусе 2", "duration": "пока в поле", "stacking": false, "removal": "выйти из поля, обелиск разрушен или отключён", "description": "Атака и защита ×1.15" },
     "severed":       { "name": "Без узла",      "icon": "broken",   "source": "Хранители руин вне поля резонанса", "duration": "пока вне поля", "stacking": false, "removal": "войти в поле связанного обелиска", "description": "Атака ×0.9" },
     "embarked":      { "name": "На борту",      "icon": "ship",     "source": "погрузка на свой транспорт", "duration": "до высадки", "stacking": false, "removal": "высадка на соседнюю сушу", "description": "Не атакует и не может быть атакован; гибнет вместе с транспортом; противник видит только число отрядов на борту" },
-    "naval_vs_land": { "name": "Корабль у берега", "icon": "anchor", "source": "отряд на воде без способности к суше", "duration": "постоянно", "stacking": false, "removal": "—", "description": "Корабли не входят на сушу и не захватывают города" }
+    "naval_vs_land": { "name": "Корабль у берега", "icon": "anchor", "source": "отряд на воде без способности к суше", "duration": "постоянно", "stacking": false, "removal": "—", "description": "Корабли не входят на сушу и не захватывают города" },
+    "steppe_charge": { "name": "Степной натиск", "icon": "cavalry", "source": "Степные ханства: атака с равнины", "duration": "в момент атаки", "stacking": false, "removal": "—", "description": "Атака ×1.1" },
+    "rough_ground":  { "name": "Чужая местность", "icon": "terrain", "source": "Степные ханства в лесу, на холмах, в горах", "duration": "пока на клетке", "stacking": false, "removal": "выйти на равнину", "description": "Защита ×0.85" },
+    "berserk":       { "name": "Берсерк", "icon": "fury", "source": "способность берсерка", "duration": "постоянно", "stacking": false, "removal": "—", "description": "Ярость действует при любой ране, а не только ниже половины здоровья" },
+    "fury":          { "name": "Ярость", "icon": "fury", "source": "Северные ярлы: раненый отряд (берсерк — при любой ране)", "duration": "пока ранен", "stacking": false, "removal": "лечение выше половины", "description": "Атака ×1.15" }
   },
   "diplomacy": {
     "default": "war",

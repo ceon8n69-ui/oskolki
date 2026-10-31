@@ -95,7 +95,9 @@ test/                    тесты правил, генератора и сер
 | POST / DELETE | `/api/matches/:id/archive` | убрать завершённую партию из своего списка / вернуть |
 | GET | `/api/matches/:id/summary` | итоги завершённой партии (владения, потери, изменение рейтинга) |
 | GET | `/api/matches/:id/replay?turn=N` | повтор рассчитанного хода: вид игрока до и после, его события |
-| GET | `/api/leaderboard` | рейтинг: топ-50 и своё место |
+| GET | `/api/leaderboard` | рейтинг: топ-50 и своё место, текущий сезон, призёры прошлого |
+| GET | `/api/referral` | ссылка «позвать друга» и счётчики приглашённых |
+| POST | `/api/share` | `{kind: invite\|result\|referral, matchId?}` → текст, ссылка, `preparedId` для `Telegram.WebApp.shareMessage` |
 | GET/POST | `/api/matches/:id/preview/moves`, `/preview/attack` | подсветка и прогноз боя |
 | WS | `/ws?token=…` | `subscribe` → `turn_resolved`, `match`, `ready_changed` |
 

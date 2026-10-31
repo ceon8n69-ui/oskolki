@@ -27,7 +27,7 @@ export function newPlayer(b: Balance, p: Pick<PlayerState, 'id' | 'name' | 'fact
     ...p,
     gold: b.economy.startGold,
     knowledge: 0,
-    researched: [],
+    researched: [...(b.factions[p.faction]?.startTechs ?? [])],
     researchQueue: [],
     researchProgress: 0,
     eliminated: false,
