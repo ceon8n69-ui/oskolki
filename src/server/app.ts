@@ -4,6 +4,7 @@ import { existsSync } from 'node:fs';
 import Fastify from 'fastify';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import fastifyStatic from '@fastify/static';
+import fastifyCompress from '@fastify/compress';
 import fastifyWebsocket from '@fastify/websocket';
 import type { WebSocket } from 'ws';
 import type { Balance } from '../shared/balance.ts';
@@ -29,6 +30,8 @@ export async function buildApp(deps: { cfg: ServerConfig; db: Db; game: GameServ
   const { cfg, db, game, b } = deps;
   const app = Fastify({ logger: cfg.env !== 'test' ? { level: 'info', redact: ['req.headers.authorization'] } : false, bodyLimit: 64 * 1024, trustProxy: true });
   await app.register(fastifyWebsocket, { options: { maxPayload: 4096 } });
+  // Сжатие ответов API и статики (мини-карта, чанки, состояние — в разы меньше по сети).
+  await app.register(fastifyCompress, { global: true, threshold: 1024, encodings: ['br', 'gzip', 'deflate'] });
 
   app.setErrorHandler((err: any, _req, reply) => {
     if (err instanceof GameError) return reply.code(err.status).send({ error: err.code });

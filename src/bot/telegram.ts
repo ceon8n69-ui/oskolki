@@ -8,6 +8,8 @@ export interface BotDeps {
   publicUrl: string;
   botUsername: string;
   log: (msg: string, extra?: unknown) => void;
+  /** Подписка администратора на оповещения (/alerts). */
+  alerts?: { isAdmin(from: { id: number; username?: string }): boolean; subscribe(chatId: number, on: boolean): Promise<void> };
 }
 
 const NOTIFY_LABELS: Record<string, string> = {
@@ -112,6 +114,10 @@ export class TelegramBot {
             : 'Осколки королевств — стратегия с одновременными ходами. Все игроки отдают приказы, затем сервер рассчитывает результат.',
           reply_markup: { inline_keyboard: [[{ text: isJoin ? 'Присоединиться' : 'Играть', web_app: { url: this.webAppUrl(isJoin ? payload : undefined) } }]] },
         });
+      } else if (cmd === '/alerts' && this.d.alerts?.isAdmin(msg.from)) {
+        const off = payload === 'off';
+        await this.d.alerts.subscribe(msg.chat.id, !off);
+        await this.api('sendMessage', { chat_id: msg.chat.id, text: off ? 'Оповещения о сбоях выключены.' : 'Оповещения о сбоях включены. Выключить: /alerts off' });
       } else if (cmd === '/settings') {
         await this.sendSettings(msg.chat.id, user.notify);
       } else if (cmd === '/help') {

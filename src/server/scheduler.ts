@@ -3,12 +3,13 @@
 import type { TelegramBot } from '../bot/telegram.ts';
 import type { Db } from './db/pool.ts';
 import type { GameService } from './game.ts';
+import type { Alerts } from './alerts.ts';
 
 export class Scheduler {
   private timer: NodeJS.Timeout | null = null;
   private running = false;
   private tick = 0;
-  deps: { db: Db; game: GameService; bot: TelegramBot | null; intervalMs: number; log: (m: string, e?: unknown) => void };
+  deps: { db: Db; game: GameService; bot: TelegramBot | null; intervalMs: number; log: (m: string, e?: unknown) => void; alerts?: Alerts };
   constructor(deps: Scheduler['deps']) {
     this.deps = deps;
     deps.game.on('maybe_due', (matchId: string) => void this.processDue(matchId));
@@ -29,6 +30,7 @@ export class Scheduler {
         await this.deps.game.processTurn(m.id, m.turn);
       } catch (e) {
         this.deps.log(`turn processing failed for ${m.id}`, String((e as Error).stack ?? e));
+        void this.deps.alerts?.send(`turn-failed:${m.id}:${m.turn}`, `ошибка расчёта хода ${m.turn} партии ${m.id}: ${String((e as Error).message ?? e).slice(0, 300)}`);
       }
     }
   }
@@ -38,10 +40,12 @@ export class Scheduler {
     this.running = true;
     try {
       await this.processDue();
+      if (this.tick % 60 === 0) await this.deps.alerts?.checkStuckTurns().catch(e => this.deps.log('stuck check failed', String(e)));
       if (this.tick++ % 30 === 0) await this.queueDeadlineWarnings();
       if (this.deps.bot) await this.deps.bot.flushNotifications();
     } catch (e) {
       this.deps.log('scheduler error', String(e));
+      void this.deps.alerts?.send('scheduler', `ошибка планировщика: ${String((e as Error).message ?? e).slice(0, 300)}`);
     } finally {
       this.running = false;
     }
