@@ -1,6 +1,7 @@
 // Telegram-бот: запуск Mini App, приглашения, уведомления, настройки.
 // Без внешних библиотек: Bot API через fetch. Работает в режиме polling или webhook.
 import type { Db } from '../server/db/pool.ts';
+import { presence, TURN_NOTICE_MIN_GAP_MIN } from '../server/growth.ts';
 
 export interface BotDeps {
   db: Db;
@@ -187,21 +188,27 @@ export class TelegramBot {
     try {
       await client.query('BEGIN');
       const { rows } = await client.query(`
-        SELECT n.id, n.user_id, n.match_id, n.kind, n.payload, u.chat_id, u.notify
-        FROM notifications n JOIN users u ON u.id = n.user_id
+        SELECT n.id, n.user_id, n.match_id, n.kind, n.payload, u.chat_id, u.notify, coalesce(m.planning_seconds, 0) AS planning_seconds,
+          EXISTS (SELECT 1 FROM notifications x WHERE x.user_id = n.user_id AND x.match_id = n.match_id AND x.kind = 'turn' AND NOT x.skipped
+                  AND x.sent_at > now() - make_interval(mins => $1)) AS recent_turn
+        FROM notifications n JOIN users u ON u.id = n.user_id LEFT JOIN matches m ON m.id = n.match_id
         WHERE n.sent_at IS NULL AND n.attempts < 5
         ORDER BY n.user_id, n.id
         LIMIT 200
-        FOR UPDATE OF n SKIP LOCKED`);
+        FOR UPDATE OF n SKIP LOCKED`, [TURN_NOTICE_MIN_GAP_MIN]);
       const byUser = new Map<number, any[]>();
       for (const r of rows) (byUser.get(r.user_id) ?? byUser.set(r.user_id, []).get(r.user_id)!).push(r);
       for (const [, list] of byUser) {
         const chatId = list[0].chat_id;
         const prefs = list[0].notify ?? {};
         const lines: string[] = [];
+        const skipped: number[] = [];
         for (const n of list) {
           const p = n.payload;
-          if (n.kind === 'turn' && prefs.turn !== false) lines.push(`Ход ${p.turn}: результаты готовы, можно отдавать приказы.`);
+          const before = lines.length;
+          // Простое «ход рассчитан» не шлём, если игрок смотрит партию; в быстрых партиях — не чаще раза в 15 минут.
+          const quiet = presence.isWatching(Number(n.user_id), n.match_id) || (n.planning_seconds < 3600 && n.recent_turn);
+          if (n.kind === 'turn' && prefs.turn !== false && !quiet) lines.push(`Ход ${p.turn}: результаты готовы, можно отдавать приказы.`);
           if (n.kind === 'turn' && p.attacked > 0 && prefs.attack !== false) lines.push(`Ваши отряды атакованы (${p.attacked}).`);
           if (n.kind === 'turn' && p.lostCities > 0 && prefs.attack !== false) lines.push(`Потеряно городов: ${p.lostCities}.`);
           if (n.kind === 'turn' && p.proposals > 0) lines.push(`Новые дипломатические предложения: ${p.proposals}.`);
@@ -209,7 +216,12 @@ export class TelegramBot {
           if (n.kind === 'turn' && p.botTakeover) lines.push('Вы пропустили несколько ходов — управление передано боту. Отдайте любой приказ, чтобы вернуть его.');
           if (n.kind === 'deadline' && prefs.deadline !== false) lines.push(`Планирование хода ${p.turn} скоро закончится.`);
           if (n.kind === 'end' && prefs.end !== false) lines.push(p.won ? 'Партия завершена — победа!' : 'Партия завершена.');
+          if (n.kind === 'waiting' && prefs.turn !== false && !presence.isWatching(Number(n.user_id), n.match_id)) lines.push(`Ход ${p.turn}: все остальные уже готовы — ждут только вас.`);
+          if (n.kind === 'referral') lines.push(`Друг по вашей ссылке доиграл первую партию — «Знамя побратимов» уже в лавке.${p.herald ? ' Получен знак «Глашатай».' : ''}`);
+          if (n.kind === 'season') lines.push(`Сезон завершён: ваше место ${p.place}, рейтинг ${p.rating}.${p.rewards?.length ? ` Награды: ${p.rewards.join(', ')}.` : ''} Начался новый сезон.`);
+          if (lines.length === before) skipped.push(n.id);
         }
+        if (skipped.length) await client.query('UPDATE notifications SET skipped=TRUE WHERE id = ANY($1)', [skipped]);
         const ids = list.map(n => n.id);
         if (!lines.length || !chatId) {
           await client.query('UPDATE notifications SET sent_at=now() WHERE id = ANY($1)', [ids]);

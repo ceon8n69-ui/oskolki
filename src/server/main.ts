@@ -7,6 +7,7 @@ import { createPool } from './db/pool.ts';
 import { GameService } from './game.ts';
 import { Scheduler } from './scheduler.ts';
 import { Alerts } from './alerts.ts';
+import { Growth } from './growth.ts';
 import { spawn } from 'node:child_process';
 
 const cfg = loadConfig();
@@ -32,8 +33,10 @@ const fatal = (kind: string) => (e: unknown) => {
 process.on('uncaughtException', fatal('uncaughtException'));
 process.on('unhandledRejection', fatal('unhandledRejection'));
 
-const app = await buildApp({ cfg, db, game, b: BALANCE, bot });
-const scheduler = new Scheduler({ db, game, bot, intervalMs: cfg.schedulerIntervalMs, log, alerts });
+const growth = new Growth({ db, bot, publicUrl: cfg.publicUrl, botUsername: cfg.botUsername, log });
+await growth.ensureSeason().catch(e => log('season check failed', String(e)));
+const app = await buildApp({ cfg, db, game, b: BALANCE, bot, growth });
+const scheduler = new Scheduler({ db, game, bot, intervalMs: cfg.schedulerIntervalMs, log, alerts, growth });
 scheduler.start();
 await app.listen({ port: cfg.port, host: '0.0.0.0' });
 await alerts.markStarted(process.env.RAILWAY_DEPLOYMENT_ID ?? null).catch(e => log('markStarted failed', String(e)));

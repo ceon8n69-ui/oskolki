@@ -107,6 +107,20 @@ export class OskolkiClient {
   leaderboard() {
     return this.request<Leaderboard>('GET', '/api/leaderboard');
   }
+  /** Ссылка-приглашение друга и счётчики. */
+  referral() {
+    return this.request<{ link: string; invited: number; finished: number; heraldAt: number }>('GET', '/api/referral');
+  }
+  /** Текст, ссылка и (в Telegram) подготовленное сообщение для Telegram.WebApp.shareMessage. */
+  share(kind: 'invite' | 'result' | 'referral', matchId?: string) {
+    return this.request<{ preparedId: string | null; text: string; url: string }>('POST', '/api/share', { kind, matchId });
+  }
+  /** Экран игры свёрнут/развёрнут — сервер не шлёт «ваш ход», пока игрок смотрит партию. */
+  setVisible(visible: boolean) {
+    this.visible = visible;
+    if (this.ws?.readyState === 1) this.ws.send(JSON.stringify({ type: visible ? 'back' : 'away' }));
+  }
+  private visible = true;
   /** Лавка за Telegram Stars (только косметика). */
   shop() {
     return this.request<{ items: (ShopItem & { owned: boolean })[]; equippedColor: string | null }>('GET', '/api/shop');
@@ -337,6 +351,7 @@ export class OskolkiClient {
     let ping: ReturnType<typeof setInterval> | null = null;
     ws.onopen = () => {
       this.wsRetry = 0;
+      if (!this.visible) ws.send('{"type":"away"}');
       if (this.matchId) ws.send(JSON.stringify({ type: 'subscribe', matchId: this.matchId }));
       ping = setInterval(() => ws.readyState === 1 && ws.send('{"type":"ping"}'), 25000);
       // После переподключения состояние могло устареть — перечитываем.
@@ -405,6 +420,8 @@ export interface MatchSummary {
   }[];
 }
 export interface Leaderboard {
-  top: { place: number; name: string; rating: number; games: number; wins: number; me: boolean; crown?: boolean }[];
+  top: { place: number; name: string; rating: number; games: number; wins: number; me: boolean; crown?: boolean; badges?: string[] }[];
+  season?: { id: number; name: string; endsAt: string } | null;
+  previous?: { place: number; name: string; rating: number }[];
   me: { place: number; rating: number; games: number; wins: number } | null;
 }

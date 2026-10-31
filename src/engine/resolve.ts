@@ -1032,7 +1032,7 @@ function resolveSupplyAndHealing(b: Balance, state: GameState, log: EventLog, ct
     }
     // Лечение: только не действовавшие отряды в зоне снабжения.
     if (!inSupply || ctx.acted.has(u.id) || u.hp >= u.maxHp) continue;
-    let heal = b.healing.inSupply + techs(b, state, u.owner).healBonus + commanderAura(b, state, u.owner, u, 'logistics');
+    let heal = b.healing.inSupply + techs(b, state, u.owner).healBonus + (traitsOf(b, state, u.owner).healBonus ?? 0) + commanderAura(b, state, u.owner, u, 'logistics');
     const city = state.cities.find(c => c.x === u.x && c.y === u.y && c.owner === u.owner);
     if (!city) heal = Math.floor(heal * fieldHealing);
     if (city) {

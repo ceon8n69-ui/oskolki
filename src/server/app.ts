@@ -21,14 +21,17 @@ import { AuthError, signSession, verifyInitData, verifySession } from './auth.ts
 import type { ServerConfig } from './config.ts';
 import type { Db } from './db/pool.ts';
 import { GameError, sanitizeOrder } from './game.ts';
+import { Growth, presence } from './growth.ts';
 import type { GameService, TurnResolvedInfo } from './game.ts';
 import { loadStateCached } from './store.ts';
 
 const WEB_DIR = fileURLToPath(new URL('../../web/dist/', import.meta.url));
 const SESSION_TTL = 7 * 24 * 3600;
 
-export async function buildApp(deps: { cfg: ServerConfig; db: Db; game: GameService; b: Balance; bot?: TelegramBot | null }) {
+export async function buildApp(deps: { cfg: ServerConfig; db: Db; game: GameService; b: Balance; bot?: TelegramBot | null; growth?: Growth }) {
   const { cfg, db, game, b } = deps;
+  const growth = deps.growth ?? new Growth({ db, bot: deps.bot ?? null, publicUrl: cfg.publicUrl, botUsername: cfg.botUsername });
+  game.onFinished ??= (tx, users, turns) => growth.onMatchFinished(tx, users, turns);
   const app = Fastify({ logger: cfg.env !== 'test' ? { level: 'info', redact: ['req.headers.authorization'] } : false, bodyLimit: 64 * 1024, trustProxy: true });
   await app.register(fastifyWebsocket, { options: { maxPayload: 4096 } });
   // Сжатие ответов API и статики (мини-карта, чанки, состояние — в разы меньше по сети).
@@ -70,18 +73,21 @@ export async function buildApp(deps: { cfg: ServerConfig; db: Db; game: GameServ
        RETURNING id`,
       [r.user.id, r.user.username ?? null, r.user.first_name ?? null],
     );
+    await growth.attachReferral(u.id, r.startParam).catch(() => false);
     return { token: issue(u.id), userId: u.id, name: r.user.first_name ?? r.user.username ?? '', startParam: r.startParam };
   });
 
   // Тестовая авторизация: только вне production и только при DEV_AUTH=1.
   if (cfg.devAuth && cfg.env !== 'production') {
-    app.post('/api/auth/dev', async (req: FastifyRequest<{ Body: { name?: string } }>) => {
+    app.post('/api/auth/dev', async (req: FastifyRequest<{ Body: { name?: string; startParam?: string } }>) => {
       const name = String(req.body?.name ?? 'dev').replace(/[^\p{L}\p{N}_ -]/gu, '').slice(0, 24) || 'dev';
       const { rows: [u] } = await db.query(
         `INSERT INTO users (telegram_id, username, first_name, is_dev) VALUES (NULL, $1, $1, TRUE) RETURNING id`,
         [name],
       );
-      return { token: issue(u.id), userId: u.id, name, startParam: null };
+      const sp = req.body?.startParam ? String(req.body.startParam) : null;
+      if (sp) await growth.attachReferral(u.id, sp).catch(() => false);
+      return { token: issue(u.id), userId: u.id, name, startParam: sp };
     });
   }
 
@@ -100,7 +106,27 @@ export async function buildApp(deps: { cfg: ServerConfig; db: Db; game: GameServ
   // Итоги, повтор хода, рейтинг.
   app.get('/api/matches/:id/summary', async (req: FastifyRequest<{ Params: { id: string } }>) => game.summary(req.params.id, auth(req)));
   app.get('/api/matches/:id/replay', async (req: FastifyRequest<{ Params: { id: string }; Querystring: { turn?: string } }>) => game.replay(req.params.id, auth(req), Number(req.query.turn)));
-  app.get('/api/leaderboard', async req => game.leaderboard(auth(req)));
+  app.get('/api/leaderboard', async req => ({ ...(await game.leaderboard(auth(req))), ...(await growth.seasonInfo()) }));
+  // Рост: приглашение друзей и «поделиться».
+  app.get('/api/referral', async req => growth.referralInfo(auth(req)));
+  app.post('/api/share', async (req: FastifyRequest<{ Body: { kind?: string; matchId?: string } }>) => {
+    const uid = auth(req);
+    const kind = String(req.body?.kind ?? '');
+    if (kind === 'referral') return growth.share(uid, 'referral');
+    const matchId = String(req.body?.matchId ?? '');
+    const pid = await game.playerIdFor(matchId, uid);
+    const info = await game.matchInfo(matchId);
+    if (kind === 'invite') {
+      if (info.phase !== 'lobby') throw new GameError('match_started', 409);
+      return growth.share(uid, 'invite', { inviteCode: info.inviteCode });
+    }
+    if (kind === 'result') {
+      const s = await game.summary(matchId, uid);
+      const meP = s.players.find(p => p.id === pid);
+      return growth.share(uid, 'result', { result: { won: !!meP && s.winners.includes(meP.id), draw: !s.winners.length, turns: s.turns, faction: b.factions[meP?.faction ?? '']?.name ?? '' } });
+    }
+    throw new GameError('bad_request', 400);
+  });
   app.post('/api/matches/:id/archive', async (req: FastifyRequest<{ Params: { id: string } }>) => game.archive(req.params.id, auth(req), true));
   app.delete('/api/matches/:id/archive', async (req: FastifyRequest<{ Params: { id: string } }>) => game.archive(req.params.id, auth(req), false));
 
@@ -248,6 +274,7 @@ export async function buildApp(deps: { cfg: ServerConfig; db: Db; game: GameServ
     }
     send(ws, { type: 'hello', protocol: PROTOCOL_VERSION });
     const mine: { matchId: string; entry: { ws: WebSocket; playerId: string } }[] = [];
+    let visible = true;
     ws.on('message', async raw => {
       let msg: any;
       try {
@@ -256,12 +283,19 @@ export async function buildApp(deps: { cfg: ServerConfig; db: Db; game: GameServ
         return;
       }
       if (msg?.type === 'ping') return;
+      // Экран свёрнут/развёрнут: свёрнутым игрокам уведомления приходят как обычно.
+      if ((msg?.type === 'away' && visible) || (msg?.type === 'back' && !visible)) {
+        visible = msg.type === 'back';
+        for (const m of mine) (visible ? presence.add(uid, m.matchId) : presence.remove(uid, m.matchId));
+        return;
+      }
       if (msg?.type === 'subscribe' && typeof msg.matchId === 'string' && mine.length < 8) {
         try {
           const playerId = await game.playerIdFor(msg.matchId, uid);
           const entry = { ws, playerId };
           (subs.get(msg.matchId) ?? subs.set(msg.matchId, new Set()).get(msg.matchId)!).add(entry);
           mine.push({ matchId: msg.matchId, entry });
+          if (visible) presence.add(uid, msg.matchId);
           send(ws, { type: 'match', match: await game.matchInfo(msg.matchId) });
         } catch {
           send(ws, { type: 'error', message: 'cannot_subscribe' });
@@ -269,7 +303,10 @@ export async function buildApp(deps: { cfg: ServerConfig; db: Db; game: GameServ
       }
     });
     ws.on('close', () => {
-      for (const m of mine) subs.get(m.matchId)?.delete(m.entry);
+      for (const m of mine) {
+        subs.get(m.matchId)?.delete(m.entry);
+        if (visible) presence.remove(uid, m.matchId);
+      }
     });
   });
   const broadcast = async (matchId: string, msgFor: (playerId: string) => ServerMessage) => {

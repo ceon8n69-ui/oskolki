@@ -192,4 +192,4 @@ export type ServerMessage =
   | { type: 'ready_changed'; matchId: string; playerId: PlayerId; ready: boolean }
   | { type: 'error'; message: string };
 
-export type ClientMessage = { type: 'subscribe'; matchId: string } | { type: 'ping' };
+export type ClientMessage = { type: 'subscribe'; matchId: string } | { type: 'ping' } | { type: 'away' } | { type: 'back' };

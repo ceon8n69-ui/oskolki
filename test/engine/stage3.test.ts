@@ -127,7 +127,7 @@ test('Народ Приливов: сильнее у воды, слабее вд
 
 test('Горные кланы платят больше золота; уникальные юниты и технологии только своему народу', () => {
   const s = flatState({ factions: { A: 'mountain', B: 'union' }, cities: [{ id: 'ca', owner: 'A', x: 2, y: 2 }, { id: 'cb', owner: 'B', x: 8, y: 8 }] });
-  assert.equal(unitCost(b, s, 'A', 'infantry').gold, Math.ceil(b.units.infantry.cost.gold * 1.2));
+  assert.equal(unitCost(b, s, 'A', 'infantry').gold, Math.ceil(b.units.infantry.cost.gold * b.factions.mountain.traits.costMul!));
   const vB = computeVision(b, s, 'B');
   assert.deepEqual(validateOrder(b, s, 'B', { kind: 'research', queue: ['mountain_iron'] }, vB), { ok: false, reason: 'tech_unavailable' });
   s.players[1].researched.push('mining', 'mountain_iron');

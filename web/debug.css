@@ -228,3 +228,84 @@ body.tut-on .goal, body.tut-on .status, body.tut-on .mini-btn, body.tut-on #mini
 .rooms-head h1 { min-width: 0; }
 .rooms-head .hb { flex: 0 0 auto; min-width: 44px; }
 @media (max-width: 420px) { .rooms-head .hb span { display: none; } .rooms-head .hb { padding: 0 10px; } .rooms-head h1 { font-size: 20px; } }
+
+/* Дерево исследований */
+.drawer-body.tree-host { padding: 0; overflow: hidden; display: flex; flex-direction: column; position: relative; touch-action: none; }
+.tq { display: flex; align-items: center; gap: 4px; padding: 6px 8px; min-height: 52px; overflow-x: auto; border-bottom: 1px solid var(--ivory3); background: var(--ivory); touch-action: pan-x; scrollbar-width: none; flex-shrink: 0; }
+.tq::-webkit-scrollbar { display: none; }
+.tq .muted { font-size: 13px; padding: 0 6px; }
+.tq-chip { display: inline-flex; align-items: center; gap: 5px; padding: 4px 9px 4px 4px; min-height: 40px; border-radius: 20px; background: var(--ivory2); font-size: 13px; font-weight: 600; white-space: nowrap; flex-shrink: 0; }
+.tq-chip .tg { width: 30px; height: 30px; padding: 5px; border-radius: 50%; background: var(--navy2); color: #fff; }
+.tq-chip.head { background: #ffe7b0; box-shadow: inset 0 0 0 2px var(--gold); }
+.tq-arr { color: var(--ink2); flex-shrink: 0; }
+.tq .icon-btn.sm { width: 40px; height: 40px; margin-left: auto; flex-shrink: 0; }
+.tv { position: relative; flex: 1; overflow: hidden; background: radial-gradient(circle at 50% 50%, #233a5f 0%, #15233a 55%, #0e1726 100%); touch-action: none; cursor: grab; }
+.tw { position: absolute; left: 0; top: 0; transform-origin: 0 0; will-change: transform; }
+.tsvg { position: absolute; left: 0; top: 0; overflow: visible; }
+.tsvg .sec { fill: color-mix(in srgb, var(--c) 13%, transparent); stroke: color-mix(in srgb, var(--c) 45%, transparent); stroke-width: 1.5; }
+.tsvg .sec-l { fill: var(--c); font: 700 15px system-ui, sans-serif; text-anchor: middle; dominant-baseline: middle; letter-spacing: .06em; text-transform: uppercase; paint-order: stroke; stroke: #0e1726; stroke-width: 4px; }
+.tsvg .e { stroke: #ffffff3a; stroke-width: 3; }
+.tsvg .e.x { stroke-dasharray: 5 6; stroke-width: 2; stroke: #ffffff26; }
+.tsvg .e.on { stroke: var(--gold); stroke-opacity: .85; }
+.tcore { position: absolute; width: 84px; height: 84px; margin: -42px 0 0 -42px; border-radius: 50%; display: flex; flex-direction: column; align-items: center; justify-content: center; background: radial-gradient(circle at 35% 30%, color-mix(in srgb, var(--c) 70%, #fff), var(--c)); color: #fff; box-shadow: 0 0 0 4px #fff3, 0 6px 18px #0008; }
+.tcore .tg { width: 30px; height: 30px; }
+.tcore b { font-size: 15px; line-height: 1; margin-top: 2px; }
+.tcore small { font-size: 11px; opacity: .85; }
+.tn { position: absolute; width: 50px; height: 50px; margin: -25px 0 0 -25px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: #2a3a55; color: #8796ad; box-shadow: 0 0 0 2px #ffffff22, 0 3px 8px #0007; transition: transform var(--t), box-shadow var(--t); }
+.tn .tg { width: 28px; height: 28px; }
+.tn.open { background: #fdf6e6; color: var(--navy); box-shadow: 0 0 0 3px var(--c), 0 0 14px color-mix(in srgb, var(--c) 70%, transparent); }
+.tn.path { background: #3a4a66; color: #d5dceb; box-shadow: 0 0 0 2px color-mix(in srgb, var(--c) 70%, transparent); }
+.tn.done { background: radial-gradient(circle at 35% 30%, #ffe08a, var(--gold) 60%, var(--gold2)); color: #4a2c00; box-shadow: 0 0 0 3px #fff8, 0 3px 10px #0008; }
+.tn.queued { background: var(--navy3); color: #fff; box-shadow: 0 0 0 3px var(--gold); }
+.tn.excluded { opacity: .45; }
+.tn.excluded::after { content: ''; position: absolute; left: 8px; right: 8px; top: 50%; height: 3px; background: var(--red); transform: rotate(-35deg); border-radius: 2px; }
+.tn.sel { transform: scale(1.18); z-index: 2; box-shadow: 0 0 0 4px #fff, 0 0 18px #fff8; }
+.tn .qn { position: absolute; right: -4px; top: -4px; min-width: 20px; height: 20px; border-radius: 10px; background: var(--gold); color: #3a2500; font: 700 12px/20px system-ui; font-style: normal; text-align: center; box-shadow: 0 1px 3px #0008; }
+.tn .prog { position: absolute; inset: -5px; width: 60px; height: 60px; transform: rotate(-90deg); pointer-events: none; }
+.tn .prog circle { fill: none; stroke: #7ef0a0; stroke-width: 3; stroke-linecap: round; }
+.tn .tl { position: absolute; top: 54px; left: 50%; transform: translateX(-50%); width: 92px; text-align: center; font-size: 11px; line-height: 1.15; font-weight: 600; color: #e8edf5; text-shadow: 0 1px 2px #000; pointer-events: none; display: none; }
+.tw.labels .tn .tl { display: block; }
+.tg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex-shrink: 0; }
+.ti-art { display: inline-block; background-repeat: no-repeat; border-radius: 50%; }
+.tn .ti-art { width: 44px; height: 44px; }
+.tzoom { position: absolute; right: 8px; top: 8px; display: flex; flex-direction: column; gap: 6px; }
+.tzoom .icon-btn { width: 40px; height: 40px; background: #ffffffe0; color: var(--navy); font-size: 22px; font-weight: 700; box-shadow: 0 2px 6px #0006; }
+.tsheet { position: absolute; left: 8px; right: 8px; bottom: 8px; padding: 10px 12px 12px; border-radius: 16px; background: var(--ivory); color: var(--ink); box-shadow: 0 -4px 20px #0009; transform: translateY(calc(100% + 16px)); transition: transform var(--t) ease-out; max-height: 60%; overflow-y: auto; touch-action: pan-y; }
+.tsheet.open { transform: none; }
+.ts-row { display: flex; align-items: center; gap: 10px; }
+.ts-row .grow { flex: 1; min-width: 0; }
+.ts-row b { font-size: 17px; color: var(--navy); }
+.ts-ic { width: 52px; height: 52px; border-radius: 50%; display: flex; align-items: center; justify-content: center; background: var(--navy2); color: #fff; box-shadow: 0 0 0 3px var(--c); flex-shrink: 0; }
+.ts-ic.done { background: radial-gradient(circle at 35% 30%, #ffe08a, var(--gold) 60%, var(--gold2)); color: #4a2c00; }
+.ts-ic .tg { width: 30px; height: 30px; }
+.ts-line { margin-top: 7px; font-size: 14px; }
+.ts-line .muted { display: inline-block; min-width: 76px; font-size: 12px; text-transform: uppercase; letter-spacing: .03em; }
+.ts-line .tag { margin: 2px 2px 0 0; }
+.ts-act { margin-top: 10px; display: flex; }
+.ts-act .btn { flex: 1; }
+.icon-btn.sm { width: 40px; height: 40px; }
+
+/* Рост: сезон, знаки, приглашение */
+.season { display: flex; align-items: center; gap: 10px; padding: 12px; margin-bottom: 12px; border-radius: 16px; color: #fff; background: linear-gradient(135deg, var(--navy3), var(--navy)); box-shadow: inset 0 0 0 1px #ffffff22; }
+.season b { font-size: 16px; color: var(--gold); }
+.season .muted { color: #c9d3e2; font-size: 13px; margin-top: 2px; }
+.badge-ic .ic { width: 16px; height: 16px; color: var(--gold2); vertical-align: -2px; margin-right: 3px; }
+.sec-h { margin: 16px 4px 6px; font-size: 13px; text-transform: uppercase; letter-spacing: .04em; color: var(--muted); }
+.invite-btn { margin-top: 14px; background: linear-gradient(#ffd16b, var(--gold)); color: #3a2500; box-shadow: inset 0 -3px 0 var(--gold2); justify-content: center; }
+.invite-card { display: flex; align-items: center; gap: 12px; padding: 10px 12px; margin-bottom: 12px; border-radius: 14px; background: #fff7df; color: var(--ink); box-shadow: 0 0 0 2px var(--gold); }
+.invite-card .grow { flex: 1; min-width: 0; }
+.invite-card .muted { font-size: 13px; }
+.invite-card .swatch { color: #fff; }
+
+/* Выбор народа */
+.fac-row { display: flex; gap: 8px; overflow-x: auto; padding: 4px 2px 6px; scrollbar-width: none; touch-action: pan-x; }
+.fac-row::-webkit-scrollbar { display: none; }
+.fac { flex: 0 0 auto; width: 76px; min-height: 84px; display: flex; flex-direction: column; align-items: center; gap: 4px; padding: 8px 4px; border-radius: 14px; background: var(--ivory2); color: var(--ink); font-size: 11.5px; font-weight: 600; line-height: 1.15; text-align: center; transition: transform var(--t), box-shadow var(--t); }
+.fac .tg { width: 40px; height: 40px; padding: 8px; border-radius: 50%; background: var(--c); color: #fff; box-shadow: inset 0 -2px 0 #0003; }
+.fac .ti-art { padding: 0; }
+.fac.on { box-shadow: 0 0 0 3px var(--c); background: #fffaf0; }
+.fac:active { transform: scale(.96); }
+.fac-info { font-size: 13px; margin-top: 2px; min-height: 2.6em; }
+.invite-card { flex-wrap: wrap; }
+.invite-card .grow { flex: 1 1 160px; }
+.invite-card > .btn { flex: 1 0 100%; }

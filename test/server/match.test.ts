@@ -415,7 +415,10 @@ test('этап 5: архипелаг, новые народы, обелиск ч
   const inf = s1.view.units.find(x => x.owner === me && x.type === 'infantry')!;
   const r0 = await call('POST', `/api/matches/${m.id}/orders`, t1, { turn: 1, order: { kind: 'unit', unitId: inf.id, mode: 'build', build: 'obelisk', path: [] }, idempotencyKey: randomUUID() });
   assert.equal(r0.json.error ?? r0.json.reason, 'obelisk_in_city', JSON.stringify(r0.json));
-  const step = (await call('GET', `/api/matches/${m.id}/preview/moves?unitId=${inf.id}`, t1)).json.tiles.find((t: { cost: number }) => t.cost <= 1);
+  // Свободная клетка вне города: занятая другим отрядом остановила бы пехоту в столице.
+  const busy = new Set([...s1.view.units, ...s1.view.cities].map(o => `${o.x},${o.y}`));
+  const step = (await call('GET', `/api/matches/${m.id}/preview/moves?unitId=${inf.id}`, t1)).json.tiles
+    .find((t: { x: number; y: number; cost: number; embark?: boolean }) => t.cost <= 1 && !t.embark && !busy.has(`${t.x},${t.y}`));
   await call('POST', `/api/matches/${m.id}/orders`, t1, { turn: 1, order: { kind: 'unit', unitId: inf.id, mode: 'move', path: [{ x: step.x, y: step.y }] }, idempotencyKey: randomUUID() });
   await call('POST', `/api/matches/${m.id}/ready`, t1, { turn: 1, ready: true });
   assert.ok(await game.processTurn(m.id, 1));
@@ -683,4 +686,104 @@ test('лавка Stars: счёт, проверка перед оплатой, в
   assert.equal(st.players.find(p => !p.isBot)!.color, '#d4a017');
   await shop.equip(uid, null);
   assert.equal((await shop.list(uid)).equippedColor, null);
+});
+
+test('рост: приглашение друга с наградой обоим, «поделиться» без бота, сезон с наградами и мягким сбросом', async () => {
+  const { Growth } = await import('../../src/server/growth.ts');
+  const growth = new Growth({ db, publicUrl: 'http://x', botUsername: 'b' });
+  // Друг входит по ссылке ref_<id>: пригласивший запоминается только у нового игрока и не у себя самого.
+  const host = (await call('POST', '/api/auth/dev', undefined, { name: 'Хозяин' })).json;
+  const ref = (await call('GET', '/api/referral', host.token)).json;
+  assert.match(ref.link, new RegExp(`ref_${host.userId}$`));
+  const friend = (await call('POST', '/api/auth/dev', undefined, { name: 'Друг', startParam: `ref_${host.userId}` })).json;
+  assert.equal(Number((await db.query('SELECT referred_by FROM users WHERE id=$1', [friend.userId])).rows[0].referred_by), host.userId);
+  assert.equal(await growth.attachReferral(host.userId, `ref_${host.userId}`), false);
+  assert.equal((await call('GET', '/api/referral', host.token)).json.invited, 1);
+  // Друг доигрывает первую партию (не меньше 3 ходов) — знамя обоим, один раз.
+  const { withTx } = await import('../../src/server/db/pool.ts');
+  await withTx(db, tx => growth.onMatchFinished(tx, [friend.userId], 2));
+  assert.equal((await db.query("SELECT count(*)::int AS n FROM user_items WHERE item='color_ally'")).rows[0].n, 0, 'короткая партия не в счёт');
+  await withTx(db, tx => growth.onMatchFinished(tx, [friend.userId], 5));
+  await withTx(db, tx => growth.onMatchFinished(tx, [friend.userId], 5));
+  const items = (await db.query("SELECT user_id FROM user_items WHERE item='color_ally' ORDER BY user_id")).rows.map(r => Number(r.user_id));
+  assert.deepEqual(items, [host.userId, friend.userId]);
+  assert.equal((await db.query("SELECT count(*)::int AS n FROM notifications WHERE kind='referral' AND user_id=$1", [host.userId])).rows[0].n, 1);
+  assert.equal((await call('GET', '/api/referral', host.token)).json.finished, 1);
+  // Наградной предмет нельзя купить.
+  const shopList = (await call('GET', '/api/shop', host.token)).json;
+  assert.equal(shopList.items.find((i: { id: string }) => i.id === 'color_ally').owned, true);
+  assert.equal((await call('POST', '/api/shop/invoice', friend.token, { item: 'badge_laurel' })).json.error, 'reward_only');
+  // «Поделиться» без бота: текст и ссылка; приглашение — только в лобби.
+  const lobbyM = (await call('POST', '/api/matches', host.token, { preset: 'quick' })).json;
+  const inv = (await call('POST', '/api/share', host.token, { kind: 'invite', matchId: lobbyM.id })).json;
+  assert.equal(inv.preparedId, null);
+  assert.match(inv.url, new RegExp(`join_${lobbyM.inviteCode}`));
+  assert.equal((await call('POST', '/api/share', friend.token, { kind: 'invite', matchId: lobbyM.id })).status, 403);
+  const rr = (await call('POST', '/api/share', friend.token, { kind: 'referral' })).json;
+  assert.match(rr.url, new RegExp(`ref_${friend.userId}`));
+  // Сезон: открывается, при истечении — места, награды, мягкий сброс, следующий сезон.
+  await db.query('UPDATE ratings SET games=0');
+  await db.query('INSERT INTO ratings (user_id, rating, games, wins) VALUES ($1, 1200, 6, 5), ($2, 1100, 2, 1) ON CONFLICT (user_id) DO UPDATE SET rating=EXCLUDED.rating, games=EXCLUDED.games, wins=EXCLUDED.wins',
+    [host.userId, friend.userId]);
+  await growth.ensureSeason(new Date('2026-10-05T00:00:00Z'));
+  await growth.ensureSeason(new Date('2026-10-20T00:00:00Z'));
+  let si = await growth.seasonInfo();
+  assert.equal(si.season!.id, 1);
+  assert.equal(si.season!.endsAt, '2026-11-01T00:00:00.000Z');
+  await growth.ensureSeason(new Date('2026-11-01T00:00:05Z'));
+  await growth.ensureSeason(new Date('2026-11-01T00:00:06Z'));
+  si = await growth.seasonInfo();
+  assert.equal(si.season!.id, 2);
+  assert.deepEqual(si.previous.map(p => p.place), [1, 2]);
+  const has = async (uid: number, it: string) => (await db.query('SELECT 1 FROM user_items WHERE user_id=$1 AND item=$2', [uid, it])).rows.length === 1;
+  assert.ok(await has(host.userId, 'badge_champion'));
+  assert.ok(await has(host.userId, 'color_veteran'));
+  assert.ok(await has(friend.userId, 'badge_laurel'));
+  assert.ok(!(await has(friend.userId, 'color_veteran')), 'меньше 5 партий');
+  const r = (await db.query('SELECT rating, games FROM ratings WHERE user_id=$1', [host.userId])).rows[0];
+  assert.deepEqual([r.rating, r.games], [1100, 0]);
+  assert.equal((await db.query("SELECT count(*)::int AS n FROM notifications WHERE kind='season'")).rows[0].n, 2);
+  const lb = (await call('GET', '/api/leaderboard', host.token)).json;
+  assert.equal(lb.season.id, 2);
+  assert.equal(lb.previous[0].place, 1);
+});
+
+test('уведомления: «ход рассчитан» не шлётся смотрящему партию и не чаще раза в 15 минут; «ждут только вас»', async () => {
+  const { presence } = await import('../../src/server/growth.ts');
+  const { TelegramBot } = await import('../../src/bot/telegram.ts');
+  const sent: string[] = [];
+  const bot = new TelegramBot({ db, token: 'x', publicUrl: 'http://x', botUsername: 'b', log: () => {} });
+  bot.api = (async (m: string, body: any) => (m === 'sendMessage' && sent.push(body.text), true)) as any;
+  await bot.flushNotifications();
+  sent.length = 0;
+  const a = (await call('POST', '/api/auth/dev', undefined, { name: 'Ася' })).json;
+  const c = (await call('POST', '/api/auth/dev', undefined, { name: 'Глеб' })).json;
+  await db.query('UPDATE users SET chat_id = id + 5000 WHERE id = ANY($1)', [[a.userId, c.userId]]);
+  const m = (await call('POST', '/api/matches', a.token, { preset: 'quick' })).json;
+  await call('POST', '/api/matches/join', c.token, { inviteCode: m.inviteCode });
+  await call('POST', `/api/matches/${m.id}/start`, a.token);
+  presence.add(a.userId, m.id);
+  const readyAll = async (turn: number) => {
+    for (const t of [a.token, c.token]) await call('POST', `/api/matches/${m.id}/ready`, t, { turn, ready: true });
+  };
+  await readyAll(1);
+  await game.processTurn(m.id, 1);
+  await bot.flushNotifications();
+  assert.equal(sent.length, 1, 'только Глебу: Ася смотрит партию: ' + JSON.stringify(sent));
+  presence.remove(a.userId, m.id);
+  sent.length = 0;
+  await readyAll(2);
+  await game.processTurn(m.id, 2);
+  await bot.flushNotifications();
+  assert.equal(sent.length, 1, 'Асе впервые; Глебу — рано (быстрая партия, 15 минут): ' + JSON.stringify(sent));
+  // «Ждут только вас» — в длинных ходах, одно на ход.
+  sent.length = 0;
+  const l = (await call('POST', '/api/matches', a.token, { preset: 'async' })).json;
+  await call('POST', '/api/matches/join', c.token, { inviteCode: l.inviteCode });
+  await call('POST', `/api/matches/${l.id}/start`, a.token);
+  await call('POST', `/api/matches/${l.id}/ready`, a.token, { turn: 1, ready: true });
+  await call('POST', `/api/matches/${l.id}/ready`, a.token, { turn: 1, ready: false });
+  await call('POST', `/api/matches/${l.id}/ready`, a.token, { turn: 1, ready: true });
+  await bot.flushNotifications();
+  assert.deepEqual(sent, ['Ход 1: все остальные уже готовы — ждут только вас.']);
 });

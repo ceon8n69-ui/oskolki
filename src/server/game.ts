@@ -20,7 +20,7 @@ import { createInitialState } from '../worldgen/setup.ts';
 import { generateWorldAsync } from '../worldgen/async.ts';
 import type { Db, Tx } from './db/pool.ts';
 import { withTx } from './db/pool.ts';
-import { shopItem } from '../shared/shop.ts';
+import { BADGES, shopItem } from '../shared/shop.ts';
 import { invalidateCachedState, loadState, loadStateCached, saveMap, saveState, saveTileChanges, setCachedMap, setCachedState, stateFromJson, stateHash, stateToJson } from './store.ts';
 
 export class GameError extends Error {
@@ -359,7 +359,10 @@ export class GameService extends EventEmitter {
    * Каждый человек сравнивается с каждым: победитель против проигравшего — 1:0, оба победителя или оба проигравших — ничья.
    * Запись одна на пользователя и партию: повторный вызов ничего не меняет.
    */
-  async recordResults(tx: Tx, matchId: string, winners: string[]): Promise<void> {
+  /** Партия завершена (после записи итогов, в той же транзакции): награды за приглашения и т. п. */
+  onFinished: ((tx: Tx, userIds: number[], turns: number) => Promise<void>) | null = null;
+
+  async recordResults(tx: Tx, matchId: string, winners: string[], turns = 0): Promise<void> {
     const { rows: humans } = await tx.query(
       `SELECT p.id, p.user_id, p.surrendered_turn FROM players p WHERE p.match_id=$1 AND p.user_id IS NOT NULL ORDER BY p.user_id`, [matchId]);
     if (!humans.length) return;
@@ -395,17 +398,19 @@ export class GameService extends EventEmitter {
         [h.user_id, ra, rated ? 1 : 0, rated && outcome === 'win' ? 1 : 0],
       );
     }
+    if (this.onFinished) await this.onFinished(tx, [...new Set(humans.map(h => Number(h.user_id)))], turns);
   }
 
-  async leaderboard(userId: number): Promise<{ top: { place: number; name: string; rating: number; games: number; wins: number; me: boolean; crown: boolean }[]; me: { place: number; rating: number; games: number; wins: number } | null }> {
+  async leaderboard(userId: number): Promise<{ top: { place: number; name: string; rating: number; games: number; wins: number; me: boolean; crown: boolean; badges: string[] }[]; me: { place: number; rating: number; games: number; wins: number } | null }> {
     const { rows } = await this.db.query(
       `SELECT r.user_id, r.rating, r.games, r.wins, coalesce(u.first_name, u.username, 'Игрок') AS name, rank() OVER (ORDER BY r.rating DESC) AS place,
-              EXISTS (SELECT 1 FROM user_items i WHERE i.user_id=r.user_id AND i.item='badge_crown') AS crown
+              EXISTS (SELECT 1 FROM user_items i WHERE i.user_id=r.user_id AND i.item='badge_crown') AS crown,
+              ARRAY(SELECT i.item FROM user_items i WHERE i.user_id=r.user_id AND i.item LIKE 'badge\_%') AS badges
        FROM ratings r JOIN users u ON u.id=r.user_id WHERE r.games > 0 ORDER BY r.rating DESC, r.games DESC LIMIT 50`);
     const { rows: [me] } = await this.db.query(
       `SELECT rating, games, wins, (SELECT count(*)::int + 1 FROM ratings x WHERE x.games > 0 AND x.rating > r.rating) AS place FROM ratings r WHERE user_id=$1`, [userId]);
     return {
-      top: rows.map(r => ({ place: Number(r.place), name: r.name, rating: r.rating, games: r.games, wins: r.wins, me: Number(r.user_id) === userId, crown: r.crown })),
+      top: rows.map(r => ({ place: Number(r.place), name: r.name, rating: r.rating, games: r.games, wins: r.wins, me: Number(r.user_id) === userId, crown: r.crown, badges: BADGES.filter(x => (r.badges as string[]).includes(x)) })),
       me: me ? { place: me.place, rating: me.rating, games: me.games, wins: me.wins } : null,
     };
   }
@@ -516,12 +521,24 @@ export class GameService extends EventEmitter {
   async setReady(matchId: string, userId: number, turn: number, ready: boolean): Promise<{ ok: boolean; reason?: string }> {
     const playerId = await this.playerIdFor(matchId, userId);
     const res = await withTx(this.db, async tx => {
-      const { rows: [m] } = await tx.query('SELECT phase, turn FROM matches WHERE id=$1 FOR SHARE', [matchId]);
+      const { rows: [m] } = await tx.query('SELECT phase, turn, planning_seconds FROM matches WHERE id=$1 FOR SHARE', [matchId]);
       if (m.phase !== 'planning' || m.turn !== turn) return { ok: false, reason: 'turn_closed' };
       const { rows: [pp] } = await tx.query('SELECT surrendered_turn, eliminated FROM players WHERE match_id=$1 AND id=$2', [matchId, playerId]);
       if (pp.surrendered_turn !== null || pp.eliminated) return { ok: false, reason: 'surrendered' };
       await tx.query('UPDATE players SET ready=$3 WHERE match_id=$1 AND id=$2', [matchId, playerId, ready]);
       await this.reclaimFromBot(tx, matchId, playerId);
+      // «Ждут только вас»: в длинных ходах последний неготовый человек получает напоминание (одно за ход).
+      if (ready && m.planning_seconds >= 300) {
+        const { rows: left } = await tx.query(
+          `SELECT user_id, ready FROM players WHERE match_id=$1 AND user_id IS NOT NULL AND NOT is_bot AND NOT eliminated AND surrendered_turn IS NULL`, [matchId]);
+        const waiting = left.filter(p => !p.ready);
+        if (left.length >= 2 && waiting.length === 1) {
+          await tx.query(
+            `INSERT INTO notifications (user_id, match_id, kind, payload, dedupe_key) VALUES ($1,$2,'waiting',$3,$4) ON CONFLICT (dedupe_key) DO NOTHING`,
+            [waiting[0].user_id, matchId, JSON.stringify({ turn }), `waiting:${matchId}:${turn}:${waiting[0].user_id}`],
+          );
+        }
+      }
       return { ok: true };
     });
     if (res.ok) {
@@ -605,7 +622,7 @@ export class GameService extends EventEmitter {
       await tx.query(`UPDATE turns SET status='resolved', resolved_at=now(), result_hash=$3, resolve_ms=$4 WHERE match_id=$1 AND number=$2`, [matchId, m.turn, stateHash(next), ms]);
       if (finished) {
         await tx.query(`UPDATE matches SET phase='finished', turn=$2, winner=$3, result=$4, deadline=NULL, updated_at=now() WHERE id=$1`, [matchId, next.turn, winner, JSON.stringify(next.mode.finished)]);
-        await this.recordResults(tx, matchId, winners);
+        await this.recordResults(tx, matchId, winners, m.turn);
       } else {
         await tx.query('INSERT INTO turns (id, match_id, number, status, snapshot) VALUES ($1,$2,$3,$4,$5)', [randomUUID(), matchId, next.turn, 'planning', JSON.stringify(stateToJson(next))]);
         const deadline = m.planning_seconds > 0 ? new Date(Date.now() + m.planning_seconds * 1000) : null;
