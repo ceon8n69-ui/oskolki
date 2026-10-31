@@ -193,3 +193,15 @@ canvas#map { position: fixed; inset: 0; width: 100%; height: 100%; display: bloc
 .player-line .muted { margin-left: auto; }
 .link { word-break: break-all; font-size: 13px; padding: 6px 0; }
 .sticky { position: sticky; bottom: 0; padding: 8px 0; background: var(--bg); }
+
+/* Обучение */
+.tut { position: fixed; z-index: 4; left: 8px; right: 8px; top: calc(var(--top-h) + 6px); padding: 10px 12px; border-radius: 14px; background: var(--ivory); color: var(--ink); border: 2px solid var(--gold); box-shadow: 0 6px 18px #0008; animation: drop var(--t) ease-out; }
+body.tut-on .goal, body.tut-on .status, body.tut-on .mini-btn, body.tut-on #mini { visibility: hidden; }
+.tut-head { display: flex; align-items: center; gap: 8px; }
+.tut-head b { flex: 1; color: var(--navy); }
+.tut-n { font-size: 12px; font-weight: 800; padding: 2px 7px; border-radius: 8px; background: var(--gold); color: #3a2500; }
+.tut-skip { min-height: 44px; padding: 0 6px; color: var(--ink2); font-size: 13px; }
+.tut-text { font-size: 14px; color: var(--ink2); margin-top: 2px; }
+.tut-pulse { animation: tutpulse 1.2s ease-in-out infinite; }
+@keyframes tutpulse { 50% { box-shadow: 0 0 0 4px var(--gold), 0 0 18px var(--gold); } }
+@media (prefers-reduced-motion: reduce) { .tut-pulse { animation: none; box-shadow: 0 0 0 3px var(--gold); } }

@@ -345,6 +345,7 @@
     "elimination": { "name": "До последнего", "description": "Побеждает последний оставшийся игрок или союз." }
   },
   "turnPresets": {
+    "tutorial": { "planningSeconds": 0,     "mapPreset": "test32",   "victory": "elimination", "turnLimit": null, "alliances": false, "botTakeoverAfter": null, "tutorial": true },
     "quick":    { "planningSeconds": 90,    "mapPreset": "test32",   "victory": "elimination", "turnLimit": 40,  "alliances": false, "botTakeoverAfter": 2 },
     "async":    { "planningSeconds": 21600, "mapPreset": "small64",  "victory": "influence",   "turnLimit": 50,  "alliances": true,  "botTakeoverAfter": 3 },
     "vsbot":    { "planningSeconds": 0,     "mapPreset": "test32",   "victory": "elimination", "turnLimit": null, "alliances": false, "botTakeoverAfter": null },

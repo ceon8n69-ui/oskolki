@@ -130,7 +130,7 @@ const RES_ICON: Record<string, string> = {
   knowledge: '<svg class="res" viewBox="0 0 20 20" aria-hidden="true"><path d="M10 2l2.2 5.3 5.8.5-4.4 3.8 1.3 5.6L10 14.3l-4.9 2.9 1.3-5.6L2 7.8l5.8-.5z" fill="#c7a6ff" stroke="#6f4ab0" stroke-width="1.1"/></svg>',
   command: '<svg class="res" viewBox="0 0 20 20" aria-hidden="true"><path d="M3 7l3.5 3L10 4l3.5 6L17 7l-1.5 9h-11z" fill="#f2b33d" stroke="#b77b12" stroke-width="1.2"/></svg>',
 };
-const PRESET_NAMES: Record<string, string> = { quick: 'Быстрая', vsbot: 'Против бота', async: 'Асинхронная', campaign: 'Кампания', conquest: 'Завоевание', islands: 'Архипелаг' };
+const PRESET_NAMES: Record<string, string> = { tutorial: 'Обучение', quick: 'Быстрая', vsbot: 'Против бота', async: 'Асинхронная', campaign: 'Кампания', conquest: 'Завоевание', islands: 'Архипелаг' };
 const RANKS = ['Новобранец', 'Ветеран', 'Элита'];
 const TERRAIN_RU: Record<number, string> = { 0: 'Глубокая вода', 1: 'Мелководье', 2: 'Равнина', 3: 'Лес', 4: 'Холмы', 5: 'Горы' };
 const TERRAIN_KEY: Record<number, string> = { 0: 'deep_water', 1: 'shallow_water', 2: 'plains', 3: 'forest', 4: 'hills', 5: 'mountain' };
@@ -607,8 +607,83 @@ function renderAll() {
   renderNav();
   renderCard();
   if (panel) renderPanel();
+  renderTutorial();
   layout();
 }
+// ---------- обучение ----------
+interface TutStep { title: string; text: string; done: (st: StateResponse) => boolean; target?: (st: StateResponse) => Coord | null; nav?: string }
+const myUnitOf = (st: StateResponse, type: string) => st.view.units.find(u => u.owner === st.view.me.id && u.type === type && !u.carriedBy) ?? null;
+const TUT_STEPS: TutStep[] = [
+  { title: 'Выберите пехотинца', text: 'Нажмите на пехотинца рядом со столицей.', done: st => !!selected && st.view.units.find(u => u.id === selected)?.type === 'infantry' && st.view.units.find(u => u.id === selected)?.owner === st.view.me.id, target: st => myUnitOf(st, 'infantry') },
+  { title: 'Атакуйте разведчика', text: 'Красная клетка — цель. Нажмите на неё, проверьте прогноз и нажмите «Атаковать».', done: st => st.orders.some(o => (o.order as any).mode === 'attack') || st.view.turn > 1, target: st => st.view.units.find(u => u.owner !== st.view.me.id && u.type === 'scout') ?? null },
+  { title: 'Завершите ход', text: 'Все игроки отдают приказы одновременно. «Завершить ход» — и сервер рассчитает результат.', done: st => st.view.turn >= 2, nav: 'nMain' },
+  { title: 'Наймите отряд', text: 'Откройте «Города» и выберите отряд в разделе «Нанять».', done: st => st.orders.some(o => o.order.kind === 'recruit') || st.view.cities.some(c => c.owner === st.view.me.id && c.queue.length > 0), nav: 'nCities' },
+  { title: 'Выберите исследование', text: 'Откройте «Исследования» и нажмите «Исследовать» у любой технологии.', done: st => st.orders.some(o => o.order.kind === 'research') || st.view.me.researchQueue.length > 0 || st.view.me.researched.length > 0, nav: 'nResearch' },
+  { title: 'Разведайте округу', text: 'Выберите разведчика и нажмите на дальнюю разведанную клетку — он проложит маршрут на несколько ходов.', done: st => { const s = myUnitOf(st, 'scout'); return !!s && (st.orders.some(o => o.subject === `unit:${s.id}` && (o.order as any).path?.length) || !!s.route?.path?.length); }, target: st => myUnitOf(st, 'scout') },
+  { title: 'Завершите ход', text: 'Готово — посмотрите, как ход разыгрывается на карте.', done: st => st.view.turn >= 3, nav: 'nMain' },
+];
+const tutKey = (id: string) => `oskolki:tut:${id}`;
+function tutStep(st: StateResponse): number {
+  try {
+    return Number(localStorage.getItem(tutKey(st.match.id)) ?? 0);
+  } catch {
+    return tutMem.get(st.match.id) ?? 0;
+  }
+}
+const tutMem = new Map<string, number>();
+function setTutStep(st: StateResponse, n: number) {
+  tutMem.set(st.match.id, n);
+  try {
+    localStorage.setItem(tutKey(st.match.id), String(n));
+  } catch { /* приватный режим — прогресс в памяти */ }
+}
+function tutorialActive(st: StateResponse): boolean {
+  return !!BALANCE.turnPresets[st.match.preset]?.tutorial && st.match.phase !== 'finished';
+}
+/** Цель текущего шага на карте (пульсирующее кольцо) — для frame. */
+function tutTarget(): Coord | null {
+  const st = client.state;
+  if (!st || !tutorialActive(st)) return null;
+  const s = TUT_STEPS[tutStep(st)];
+  return s?.target?.(st) ?? null;
+}
+function renderTutorial() {
+  const st = client.state!;
+  let el = document.getElementById('tut');
+  document.querySelectorAll('.tut-pulse').forEach(e => e.classList.remove('tut-pulse'));
+  document.body.classList.remove('tut-on');
+  if (!tutorialActive(st)) {
+    el?.remove();
+    return;
+  }
+  let n = tutStep(st);
+  while (n < TUT_STEPS.length && TUT_STEPS[n].done(st)) n++;
+  if (n !== tutStep(st)) setTutStep(st, n);
+  if (!el) {
+    el = document.createElement('section');
+    el.id = 'tut';
+    el.className = 'tut';
+    el.setAttribute('aria-live', 'polite');
+    app.appendChild(el);
+  }
+  if (n >= TUT_STEPS.length) {
+    el.innerHTML = `<div class="tut-head"><b>Обучение пройдено</b></div><div class="tut-text">Дальше — настоящая партия: захватывайте города и побеждайте соперников.</div>
+      <div class="btn-row"><button class="btn sm" id="tutStay">Остаться</button><button class="btn sm gold" id="tutBot">Против бота</button></div>`;
+    document.getElementById('tutStay')!.onclick = () => el!.remove();
+    document.getElementById('tutBot')!.onclick = () => client.createMatch('vsbot', st.view.me.faction).then(m => openMatch(m.id)).catch(e => toast(errText(e)));
+    return;
+  }
+  const s = TUT_STEPS[n];
+  document.body.classList.add('tut-on');
+  el.innerHTML = `<div class="tut-head"><span class="tut-n">${n + 1}/${TUT_STEPS.length}</span><b>${esc(s.title)}</b><button class="tut-skip" id="tutSkip">Пропустить</button></div><div class="tut-text">${esc(s.text)}</div>`;
+  document.getElementById('tutSkip')!.onclick = () => {
+    setTutStep(st, TUT_STEPS.length);
+    el!.remove();
+    document.body.classList.remove('tut-on');
+  };
+  if (s.nav) document.getElementById(s.nav)?.classList.add('tut-pulse');
+}
+
 /** Совместимость со старым кодом воспроизведения. */
 const renderHud = () => renderAll();
 
@@ -830,10 +905,20 @@ function positionCtx() {
   const w = box.childElementCount * 54;
   const topLimit = (document.getElementById('goal')?.getBoundingClientRect().bottom ?? 90) + 6;
   const bottomLimit = (document.getElementById('card')?.getBoundingClientRect().top ?? innerHeight - 160) - 6;
-  let y = p.sy + S * 0.22 + 6;
-  if (y + 50 > bottomLimit) y = p.sy - S * 1.05 - 54;
-  const x = Math.max(8, Math.min(innerWidth - w - 8, p.sx - w / 2));
-  const fits = y >= topLimit && y + 50 <= bottomLimit && p.sx > -20 && p.sx < innerWidth + 20;
+  // Точки, которые кнопки не должны закрывать: цели атаки (их фигуры выше клетки).
+  const avoid = [...targetIds].map(id => st.view.units.find(x => x.id === id)).filter(Boolean).map(t => tileToScreen(t!.x, t!.y));
+  const hits = (x: number, y: number) => avoid.some(a => a.sx > x - S * 0.3 && a.sx < x + w + S * 0.3 && a.sy + S * 0.15 > y && a.sy - S * 0.9 < y + 50);
+  const clampX = (x: number) => Math.max(8, Math.min(innerWidth - w - 8, x));
+  const options = [
+    { x: clampX(p.sx - w / 2), y: p.sy + S * 0.22 + 6 },
+    { x: clampX(p.sx - w / 2), y: p.sy - S * 1.05 - 54 },
+    { x: clampX(p.sx - w - S * 0.4), y: p.sy - 25 },
+    { x: clampX(p.sx + S * 0.4), y: p.sy - 25 },
+  ];
+  const inView = (o: { x: number; y: number }) => o.y >= topLimit && o.y + 50 <= bottomLimit;
+  const pick = options.find(o => inView(o) && !hits(o.x, o.y));
+  const { x, y } = pick ?? options[0];
+  const fits = !!pick && p.sx > -20 && p.sx < innerWidth + 20;
   if (fits !== ctxFits) {
     ctxFits = fits;
     renderCard();
@@ -1447,6 +1532,17 @@ function frame(now: number) {
     for (const fn of layers.get(d) ?? []) fn();
   }
 
+  // Обучение: пульсирующее кольцо вокруг цели шага.
+  const tt = tutTarget();
+  if (tt) {
+    const p = tileToScreen(tt.x, tt.y);
+    const k = reducedMotion ? 0.5 : (Math.sin(now / 260) + 1) / 2;
+    ctx.strokeStyle = `rgba(244, 182, 63, ${0.55 + k * 0.45})`;
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.ellipse(p.sx, p.sy, S * (0.42 + k * 0.08), S * (0.21 + k * 0.04), 0, 0, Math.PI * 2);
+    ctx.stroke();
+  }
   // Приказы и метки — поверх сцены.
   for (const o of st.orders) {
     const ord = o.order;

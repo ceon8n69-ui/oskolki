@@ -11,7 +11,9 @@ import { orderSubjectKey } from '../shared/types.ts';
 import { botOrders } from '../ai/simple.ts';
 import { RULES_VERSION, resolveTurn } from '../engine/resolve.ts';
 import { reservedResources, validateOrder } from '../engine/validate.ts';
-import { computeVision } from '../engine/vision.ts';
+import { computeAllVision, computeVision, updateExploredAndIntel } from '../engine/vision.ts';
+import { newUnit } from '../engine/factory.ts';
+import { isLandPassable } from '../engine/grid.ts';
 import { playerView } from '../engine/view.ts';
 import { GENERATOR_VERSION } from '../worldgen/generate.ts';
 import { createInitialState } from '../worldgen/setup.ts';
@@ -63,22 +65,25 @@ export class GameService extends EventEmitter {
     const mp = this.b.map.presets[tp.mapPreset];
     const id = randomUUID();
     const invite = randomBytes(6).toString('base64url');
-    const maxPlayers = preset === 'vsbot' ? 2 : mp.players;
+    const solo = preset === 'vsbot' || !!tp.tutorial;
+    const maxPlayers = solo ? 2 : mp.players;
     await withTx(this.db, async tx => {
       await tx.query(
         `INSERT INTO matches (id, preset, phase, turn, seed, balance_version, rules_version, map_width, map_height, chunk_size, planning_seconds, max_players, invite_code, created_by, mode)
          VALUES ($1,$2,'lobby',0,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-        [id, preset, randomBytes(8).toString('hex'), this.b.version, RULES_VERSION, mp.width, mp.height, this.b.map.chunkSize, tp.planningSeconds, maxPlayers, invite, userId, JSON.stringify(mode)],
+        [id, preset, tp.tutorial ? 'tutorial-1' : randomBytes(8).toString('hex'), this.b.version, RULES_VERSION, mp.width, mp.height, this.b.map.chunkSize, tp.planningSeconds, maxPlayers, invite, userId, JSON.stringify(mode)],
       );
       await this.addPlayer(tx, id, userId, displayName, false, faction);
-      if (preset === 'vsbot') {
+      if (tp.tutorial) {
+        await this.addPlayer(tx, id, null, 'Разбойники', true, faction === 'ash' ? 'union' : 'ash');
+      } else if (preset === 'vsbot') {
         // Бот берёт другой народ, чтобы партия проверяла их различия.
         const others = Object.keys(this.b.factions).filter(f => f !== faction);
         await this.addPlayer(tx, id, null, 'Бот', true, others[parseInt(id.slice(0, 2), 16) % others.length]);
       }
       await this.log(tx, id, `user:${userId}`, 'match_created', { preset, victory, turnLimit, alliances });
     });
-    if (preset === 'vsbot') await this.startMatch(id);
+    if (solo) await this.startMatch(id);
     return this.matchInfo(id);
   }
 
@@ -154,6 +159,7 @@ export class GameService extends EventEmitter {
         mode: { victory: mm.victory ?? tpm.victory, turnLimit: mm.turnLimit === undefined ? tpm.turnLimit : mm.turnLimit, alliances: mm.alliances ?? tpm.alliances },
         players: pl.map(p => ({ id: p.id, name: p.name, faction: p.faction, isBot: p.is_bot })),
       });
+      if (tpm.tutorial) placeTutorialTarget(this.b, state);
       for (const p of state.players) await tx.query('UPDATE players SET color=$3 WHERE match_id=$1 AND id=$2', [matchId, p.id, p.color]);
       await saveMap(tx, matchId, world.map);
       await saveState(tx, state);
@@ -443,7 +449,9 @@ export class GameService extends EventEmitter {
       const orders: SubmittedOrder[] = active.map(o => ({ id: o.id, playerId: o.playerId, order: o.order }));
       // Приказы ботов сохраняются как обычные приказы: журнал хода полный, расчёт воспроизводится без повторного запуска ИИ.
       const botRows: { id: string; player: string; subject: string; payload: Order; key: string }[] = [];
-      for (const p of state.players.filter(p => p.isBot && !p.eliminated)) {
+      // Обучение: противник пассивен — стоит и ждёт, пока новичок осваивает приказы.
+      const passive = !!this.b.turnPresets[m.preset]?.tutorial;
+      for (const p of state.players.filter(p => p.isBot && !p.eliminated && !passive)) {
         const bo = botOrders(this.b, state, p.id);
         for (let i = 0; i < bo.length; i++) {
           const key = `bot-${m.turn}-${p.id}-${String(i).padStart(3, '0')}`;
@@ -667,4 +675,22 @@ export interface MatchOptions {
 export function deterministicUuid(s: string): string {
   const h = createHash('sha256').update(s).digest('hex');
   return `${h.slice(0, 8)}-${h.slice(8, 12)}-5${h.slice(13, 16)}-a${h.slice(17, 20)}-${h.slice(20, 32)}`;
+}
+
+/** Обучение: ослабленный разведчик противника в двух клетках от столицы игрока — цель первой атаки. */
+export function placeTutorialTarget(b: Balance, state: GameState): void {
+  const human = state.players.find(p => !p.isBot);
+  const bot = state.players.find(p => p.isBot);
+  const cap = human && state.cities.find(c => c.owner === human.id && c.isCapital);
+  if (!human || !bot || !cap) return;
+  const free = (x: number, y: number) => isLandPassable(b, state.map, x, y) && !state.units.some(u => u.x === x && u.y === y) && !state.cities.some(c => c.x === x && c.y === y);
+  for (const [dx, dy] of [[2, 0], [0, 2], [-2, 0], [0, -2], [2, 1], [1, 2], [-2, 1], [-1, 2], [2, -1], [1, -2], [-2, -1], [-1, -2]]) {
+    const x = cap.x + dx, y = cap.y + dy;
+    if (!free(x, y)) continue;
+    const u = newUnit(b, state, { id: `u${state.nextIds.unit++}`, owner: bot.id, type: 'scout', x, y, createdTurn: 1 });
+    u.hp = 3;
+    state.units.push(u);
+    updateExploredAndIntel(b, state, computeAllVision(b, state));
+    return;
+  }
 }

@@ -581,3 +581,21 @@ test('эксплуатация: сжатие ответов, оповещени�
   assert.ok(sent.some(s => s.text.includes(m.id)));
   await alerts.subscribe(5001, false);
 });
+
+test('обучение: фиксированная карта, цель рядом со столицей, пассивный противник', async () => {
+  const t1 = await devLogin('Ученик');
+  const m = (await call('POST', '/api/matches', t1, { preset: 'tutorial', faction: 'union' })).json;
+  assert.equal(m.phase, 'planning');
+  const s = (await call<StateResponse>('GET', `/api/matches/${m.id}/state`, t1)).json;
+  const cap = s.view.cities.find(c => c.owner === s.view.me.id && c.isCapital)!;
+  const target = s.view.units.find(u => u.owner !== s.view.me.id && u.type === 'scout')!;
+  assert.ok(target, 'разведчик противника виден');
+  assert.equal(target.hp, 3);
+  assert.equal(Math.max(Math.abs(target.x - cap.x), Math.abs(target.y - cap.y)), 2);
+  await call('POST', `/api/matches/${m.id}/ready`, t1, { turn: 1, ready: true });
+  assert.ok(await game.processTurn(m.id, 1));
+  const { rows } = await db.query(`SELECT count(*)::int AS n FROM orders WHERE match_id=$1 AND idempotency_key LIKE 'bot-%'`, [m.id]);
+  assert.equal(rows[0].n, 0, 'противник в обучении не действует');
+  const { rows: [seed] } = await db.query('SELECT seed FROM matches WHERE id=$1', [m.id]);
+  assert.equal(seed.seed, 'tutorial-1');
+});
