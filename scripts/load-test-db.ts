@@ -82,7 +82,11 @@ log(`загрузка состояния из БД (без кеша): ${loadMs} 
 log(`ответ /state для игрока: ${kb(view.length)}; 16 чанков (экран): ${kb(chunks.length)}`);
 const mem = process.memoryUsage();
 log(`память процесса: heap ${(mem.heapUsed / 2 ** 20).toFixed(0)} МБ, rss ${(mem.rss / 2 ** 20).toFixed(0)} МБ`);
-log(`партия: ${created.id} (данные оставлены для анализа)`);
+if (args.includes('--cleanup')) {
+  await db.query('DELETE FROM matches WHERE id=$1', [created.id]);
+  await db.query('DELETE FROM users WHERE id=$1', [u.id]);
+  log(`партия ${created.id} удалена (--cleanup)`);
+} else log(`партия: ${created.id} (данные оставлены для анализа)`);
 
 await stopWorldgenWorker();
 await db.end();

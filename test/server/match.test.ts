@@ -547,3 +547,37 @@ test('сдача в партии один на один завершает её 
   assert.notEqual(info.winners[0], info.players.find((p: { name: string }) => p.name === 'Тимур').id);
   assert.equal((await call('POST', `/api/matches/${m.id}/archive`, t1)).json.ok, true);
 });
+
+test('эксплуатация: сжатие ответов, оповещения администратору, обнаружение падения и зависших ходов', async () => {
+  const { gunzipSync } = await import('node:zlib');
+  const r = await app.inject({ method: 'GET', url: '/api/rules', headers: { 'accept-encoding': 'gzip' } });
+  assert.equal(r.headers['content-encoding'], 'gzip');
+  const plain = JSON.parse(gunzipSync(r.rawPayload).toString());
+  assert.equal(plain.version, BALANCE.version);
+
+  const { Alerts } = await import('../../src/server/alerts.ts');
+  const sent: { chat_id: number; text: string }[] = [];
+  const bot = { api: async (_m: string, body: any) => sent.push(body) } as any;
+  const alerts = new Alerts({ db, bot, admins: ['@Boss', '42'], log: () => {} });
+  assert.equal(alerts.isAdmin({ id: 1, username: 'boss' }), true);
+  assert.equal(alerts.isAdmin({ id: 42 }), true);
+  assert.equal(alerts.isAdmin({ id: 7, username: 'stranger' }), false);
+  await alerts.subscribe(5001, true);
+  await alerts.subscribe(5001, true);
+  assert.equal(await alerts.send('k', 'тест'), true);
+  assert.equal(await alerts.send('k', 'повтор'), false, 'одинаковые оповещения не повторяются чаще порога');
+  assert.equal(sent.length, 1);
+  // Падение: старт без штатной остановки предыдущего запуска.
+  await alerts.markStarted('d1');
+  await alerts.markStopped();
+  assert.equal(await alerts.markStarted('d2'), false, 'после штатной остановки — без оповещения');
+  assert.equal(await alerts.markStarted('d3'), true, 'после падения — оповещение');
+  assert.ok(sent.some(s => s.text.includes('после сбоя')));
+  // Зависший ход: срок истёк давно, а расчёта нет.
+  const t1 = await devLogin('Дежурный');
+  const m = (await call('POST', '/api/matches', t1, { preset: 'vsbot' })).json;
+  await db.query(`UPDATE matches SET deadline = now() - interval '30 minutes' WHERE id=$1`, [m.id]);
+  assert.ok((await alerts.checkStuckTurns(10)).includes(m.id));
+  assert.ok(sent.some(s => s.text.includes(m.id)));
+  await alerts.subscribe(5001, false);
+});

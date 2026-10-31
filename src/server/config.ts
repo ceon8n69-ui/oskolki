@@ -10,6 +10,7 @@ export interface ServerConfig {
   webhookSecret: string | null;
   sessionSecret: string;
   adminToken: string | null;
+  alertAdmins: string[];
   devAuth: boolean;
   initDataMaxAgeSec: number;
   schedulerIntervalMs: number;
@@ -34,6 +35,7 @@ export function loadConfig(env: NodeJS.ProcessEnv = process.env): ServerConfig {
     webhookSecret: env.WEBHOOK_SECRET || null,
     sessionSecret,
     adminToken: env.ADMIN_TOKEN || null,
+    alertAdmins: (env.ALERT_ADMINS ?? '').split(',').map(s => s.trim()).filter(Boolean),
     devAuth,
     initDataMaxAgeSec: Number(env.INIT_DATA_MAX_AGE_SEC ?? 86400),
     schedulerIntervalMs: Number(env.SCHEDULER_INTERVAL_MS ?? 1000),
