@@ -146,3 +146,28 @@ export function factionIcon(faction: string, cls = 'tg'): string {
   }
   return glyph(FACTION_GLYPH[faction] ?? 'banner', cls);
 }
+
+/** Глифы построек городов (значки под городом на карте и в карточке). */
+export const BUILDING_GLYPH: Record<string, string> = {
+  farm: 'wheat', lumber_mill: 'axe', mine: 'pick', market: 'scales', barracks: 'shield', forge: 'hammer',
+  academy: 'book', walls: 'bricks', supply_depot: 'cart', port: 'anchor',
+};
+const pathCache = new Map<string, Path2D[]>();
+/** Контуры глифа для canvas (viewBox 24×24): пути и окружности. */
+export function glyphPaths(key: string): Path2D[] {
+  const hit = pathCache.get(key);
+  if (hit) return hit;
+  const src = G[key] ?? G.book;
+  const out: Path2D[] = [];
+  for (const m of src.matchAll(/<path d="([^"]+)"/g)) out.push(new Path2D(m[1]));
+  for (const m of src.matchAll(/<circle cx="([\d.]+)" cy="([\d.]+)" r="([\d.]+)"/g)) {
+    const p = new Path2D();
+    p.arc(Number(m[1]), Number(m[2]), Number(m[3]), 0, Math.PI * 2);
+    out.push(p);
+  }
+  pathCache.set(key, out);
+  return out;
+}
+export function buildingIcon(id: string, cls = 'tg'): string {
+  return glyph(BUILDING_GLYPH[id] ?? 'castle', cls);
+}
