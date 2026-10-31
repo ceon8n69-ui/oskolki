@@ -1440,6 +1440,18 @@ function drawTile(x: number, y: number, t: ReturnType<typeof client.tile>, overl
   diamond(sx, sy, S, 1.01);
   ctx.fillStyle = shade(base, k);
   ctx.fill();
+  // Stable, sparse surface detail. Pure decoration; never adds resource markers.
+  if (terr >= 2 && terr <= 4 && S >= 34) {
+    ctx.save();
+    diamond(sx, sy, S, 0.94); ctx.clip();
+    for (let i = 0; i < 4; i++) {
+      const dx = (jitter(x * 7 + i, y + 31) - 0.5) * S * 0.72;
+      const dy = (jitter(x + 91, y * 7 + i) - 0.5) * S * 0.35;
+      ctx.fillStyle = i % 2 ? '#e2d7a320' : '#35532a18';
+      ctx.beginPath(); ctx.ellipse(sx + dx, sy + dy, S * 0.09, S * 0.025, 0, 0, Math.PI * 2); ctx.fill();
+    }
+    ctx.restore();
+  }
   if (terr <= 1 && S >= 24) {
     // блики воды
     ctx.strokeStyle = '#ffffff22';
@@ -1471,7 +1483,7 @@ function drawTile(x: number, y: number, t: ReturnType<typeof client.tile>, overl
     ctx.fill();
   }
   if (S >= 22) {
-    ctx.strokeStyle = '#00000018';
+    ctx.strokeStyle = '#2435180c';
     ctx.lineWidth = 1;
     diamond(sx, sy, S);
     ctx.stroke();
@@ -1496,7 +1508,7 @@ function drawTileProps(x: number, y: number, t: NonNullable<ReturnType<typeof cl
       }
     }
   } else if (t.terrain === 5) {
-    if (!drawLiveArtIso(ctx, 'mountain', sx, sy + S * 0.16, S)) {
+    if (!drawLiveArtIso(ctx, jitter(x + 17, y) > 0.48 ? 'rockPeak' : 'rockRidge', sx + (jitter(y, x) - 0.5) * S * 0.1, sy + S * 0.16, S, 1, 0.85 + jitter(x, y) * 0.28)) {
       ctx.fillStyle = '#9a9aa4';
       ctx.beginPath(); ctx.moveTo(sx, sy - S * 0.55); ctx.lineTo(sx + S * 0.32, sy + S * 0.1); ctx.lineTo(sx - S * 0.32, sy + S * 0.1); ctx.closePath(); ctx.fill();
       ctx.fillStyle = '#eee';
@@ -1511,14 +1523,19 @@ function drawTileProps(x: number, y: number, t: NonNullable<ReturnType<typeof cl
     ctx.stroke();
   }
   if (S >= 18) {
-    const mark = (color: string, ox: number) => {
+    const resource = (kind: string, color: string, ox: number) => {
+      if (drawLiveArtIso(ctx, kind, sx + ox * S, sy + S * 0.18, S)) return;
+      // Compact diamond fallback when art is disabled or unavailable.
       ctx.fillStyle = color;
-      ctx.beginPath(); ctx.arc(sx + ox * S, sy + S * 0.08, Math.max(2, S * 0.05), 0, Math.PI * 2); ctx.fill();
+      diamond(sx + ox * S, sy + S * 0.08, S * 0.16);
+      ctx.fill();
     };
     if (t.features & 4) {
       const looted = client.state!.view.lootedRuins.includes(y * client.state!.view.map.width + x);
-      ctx.fillStyle = looted ? '#77777799' : '#d8d2c4';
-      for (const [ox, h] of [[-0.12, 0.16], [0.02, 0.24], [0.14, 0.12]]) ctx.fillRect(sx + ox * S, sy - h * S, S * 0.06, h * S);
+      if (!drawLiveArtIso(ctx, 'ruins', sx, sy + S * 0.16, S, looted ? 0.4 : 1)) {
+        ctx.fillStyle = looted ? '#77777799' : '#d8d2c4';
+        for (const [ox, h] of [[-0.12, 0.16], [0.02, 0.24], [0.14, 0.12]]) ctx.fillRect(sx + ox * S, sy - h * S, S * 0.06, h * S);
+      }
     }
     if (t.features & 8) {
       ctx.fillStyle = '#ffd76a';
@@ -1526,9 +1543,9 @@ function drawTileProps(x: number, y: number, t: NonNullable<ReturnType<typeof cl
       ctx.textAlign = 'center';
       ctx.fillText('✦', sx, sy - S * 0.08);
     }
-    if (t.features & 16) mark('#8b5a2b', -0.2);
-    if (t.features & 32) mark('#cfd3d8', 0.2);
-    if (t.features & 64) mark('#9be7ff', 0);
+    if (t.features & 16) resource('timber', '#8b5a2b', -0.22);
+    if (t.features & 32) resource('iron', '#cfd3d8', 0.22);
+    if (t.features & 64) resource('crystal', '#9be7ff', 0);
   }
   ctx.restore();
 }

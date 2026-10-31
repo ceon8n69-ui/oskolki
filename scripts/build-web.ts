@@ -22,3 +22,11 @@ await writeFile(out + 'index.html', html.replace('./main.js', './main.js?v=' + v
 await cp(new URL('../web/debug.css', import.meta.url).pathname, out + 'debug.css');
 
 await cp(new URL('../web/art', import.meta.url).pathname, out + 'art', { recursive: true });
+
+// Standalone visual QA fixture, sharing the exact live sprite renderer.
+await build({
+  entryPoints: [new URL('../web/src/art-preview.ts', import.meta.url).pathname],
+  bundle: true, format: 'esm', target: ['es2022', 'safari15'],
+  outfile: out + 'art-preview.js',
+});
+await cp(new URL('../web/art-preview.html', import.meta.url).pathname, out + 'art-preview.html');

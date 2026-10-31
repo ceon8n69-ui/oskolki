@@ -1,0 +1,6 @@
+<!doctype html>
+<html lang="ru"><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Проверка графики — Осколки королевств</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#121d18;color:#e5e8da;font:15px system-ui}main{max-width:1000px;margin:auto;padding:16px}h1{font-size:20px;margin:0 0 12px}.controls{display:flex;gap:14px;align-items:center;flex-wrap:wrap;margin-bottom:12px}label{display:flex;gap:8px;align-items:center}input[type=range]{width:120px}canvas{display:block;width:100%;height:720px;border-radius:12px}p{color:#a9b8ac;line-height:1.5}output{font-variant-numeric:tabular-nums}
+</style><main><h1>Масштаб объектов</h1><div class="controls"><label>Масштаб <input id="zoom" type="range" min="18" max="64" value="48"></label><label><input id="fog" type="checkbox"> Туман</label><output id="status">Загрузка…</output></div><canvas aria-label="Замок, отряды и объекты окружения"></canvas><p>Проверочная сцена спрайтов. Для проверки расположения объектов и управления нужна игровая партия.</p></main><script type="module" src="./art-preview.js"></script></html>
