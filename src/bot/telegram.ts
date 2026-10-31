@@ -10,6 +10,8 @@ export interface BotDeps {
   log: (msg: string, extra?: unknown) => void;
   /** Подписка администратора на оповещения (/alerts). */
   alerts?: { isAdmin(from: { id: number; username?: string }): boolean; subscribe(chatId: number, on: boolean): Promise<void> };
+  /** Платежи Telegram Stars. */
+  shop?: { preCheckout(q: any): Promise<{ ok: boolean; error?: string }>; paid(sp: any): Promise<boolean> };
 }
 
 const NOTIFY_LABELS: Record<string, string> = {
@@ -58,11 +60,13 @@ export class TelegramBot {
         { command: 'start', description: 'Открыть игру' },
         { command: 'settings', description: 'Настройка уведомлений' },
         { command: 'help', description: 'Помощь' },
+        { command: 'paysupport', description: 'Вопросы по оплате' },
+        { command: 'terms', description: 'Условия покупок' },
       ],
     }).catch(e => this.d.log('setMyCommands failed', String(e)));
     await this.api('setChatMenuButton', { menu_button: { type: 'web_app', text: 'Играть', web_app: { url: this.webAppUrl() } } }).catch(e => this.d.log('menu button failed', String(e)));
     if (mode === 'webhook') {
-      await this.api('setWebhook', { url: `${this.d.publicUrl}/telegram/webhook`, secret_token: webhookSecret, allowed_updates: ['message', 'callback_query'] });
+      await this.api('setWebhook', { url: `${this.d.publicUrl}/telegram/webhook`, secret_token: webhookSecret, allowed_updates: ['message', 'callback_query', 'pre_checkout_query'] });
     } else {
       await this.api('deleteWebhook', {}).catch(() => {});
     }
@@ -72,7 +76,7 @@ export class TelegramBot {
     const loop = async () => {
       while (!this.stopped) {
         try {
-          const updates = await this.api<any[]>('getUpdates', { offset: this.offset, timeout: 25, allowed_updates: ['message', 'callback_query'] });
+          const updates = await this.api<any[]>('getUpdates', { offset: this.offset, timeout: 25, allowed_updates: ['message', 'callback_query', 'pre_checkout_query'] });
           for (const u of updates) {
             this.offset = u.update_id + 1;
             await this.handleUpdate(u).catch(e => this.d.log('bot update error', String(e)));
@@ -101,6 +105,18 @@ export class TelegramBot {
   }
 
   async handleUpdate(u: any): Promise<void> {
+    // Оплата Stars: ответ на pre_checkout_query обязателен в течение 10 секунд.
+    if (u.pre_checkout_query) {
+      const q = u.pre_checkout_query;
+      const r = this.d.shop ? await this.d.shop.preCheckout(q).catch(() => ({ ok: false, error: 'Попробуйте позже' })) : { ok: false, error: 'Оплата недоступна' };
+      await this.api('answerPreCheckoutQuery', { pre_checkout_query_id: q.id, ok: r.ok, ...(r.ok ? {} : { error_message: r.error }) });
+      return;
+    }
+    if (u.message?.successful_payment) {
+      const granted = await this.d.shop?.paid(u.message.successful_payment);
+      if (granted) await this.api('sendMessage', { chat_id: u.message.chat.id, text: 'Спасибо! Покупка добавлена — она уже в лавке игры.' }).catch(() => {});
+      return;
+    }
     if (u.message?.text && u.message.chat?.type === 'private') {
       const msg = u.message;
       const user = await this.upsertUser(msg.from, msg.chat.id);
@@ -118,6 +134,10 @@ export class TelegramBot {
         const off = payload === 'off';
         await this.d.alerts.subscribe(msg.chat.id, !off);
         await this.api('sendMessage', { chat_id: msg.chat.id, text: off ? 'Оповещения о сбоях выключены.' : 'Оповещения о сбоях включены. Выключить: /alerts off' });
+      } else if (cmd === '/paysupport') {
+        await this.api('sendMessage', { chat_id: msg.chat.id, text: 'Вопросы по покупкам и возвратам: напишите сюда, что купили и когда, — ответим в течение 48 часов. Покупки в «Осколках королевств» — только внешний вид и на силу в игре не влияют.' });
+      } else if (cmd === '/terms') {
+        await this.api('sendMessage', { chat_id: msg.chat.id, text: 'Покупки за Telegram Stars дают только косметику (цвета знамени, значки) и не влияют на баланс. Купленное сохраняется за аккаунтом Telegram. Возврат — по обращению в /paysupport.' });
       } else if (cmd === '/settings') {
         await this.sendSettings(msg.chat.id, user.notify);
       } else if (cmd === '/help') {

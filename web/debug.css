@@ -215,3 +215,16 @@ body.tut-on .goal, body.tut-on .status, body.tut-on .mini-btn, body.tut-on #mini
 .lb-place { width: 28px; font-weight: 800; color: var(--navy); }
 .lb-row b { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .lb-r { font-weight: 800; }
+
+/* Лавка */
+.shop { display: flex; flex-direction: column; gap: 8px; }
+.shop-item { display: flex; align-items: center; gap: 12px; padding: 10px 12px; border-radius: 14px; background: var(--ivory); color: var(--ink); }
+.shop-item.on { box-shadow: 0 0 0 2px var(--gold); }
+.shop-item .grow { flex: 1; min-width: 0; }
+.swatch { width: 44px; height: 44px; border-radius: 12px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; background: var(--navy); color: var(--gold); border: 2px solid #fff; box-shadow: 0 2px 6px #0004; }
+.swatch .ic { width: 26px; height: 26px; }
+.crown .ic { width: 16px; height: 16px; color: var(--gold2); vertical-align: -2px; margin-right: 4px; }
+
+.rooms-head h1 { min-width: 0; }
+.rooms-head .hb { flex: 0 0 auto; min-width: 44px; }
+@media (max-width: 420px) { .rooms-head .hb span { display: none; } .rooms-head .hb { padding: 0 10px; } .rooms-head h1 { font-size: 20px; } }

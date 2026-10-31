@@ -20,6 +20,7 @@ import { createInitialState } from '../worldgen/setup.ts';
 import { generateWorldAsync } from '../worldgen/async.ts';
 import type { Db, Tx } from './db/pool.ts';
 import { withTx } from './db/pool.ts';
+import { shopItem } from '../shared/shop.ts';
 import { invalidateCachedState, loadState, loadStateCached, saveMap, saveState, saveTileChanges, setCachedMap, setCachedState, stateFromJson, stateHash, stateToJson } from './store.ts';
 
 export class GameError extends Error {
@@ -160,6 +161,14 @@ export class GameService extends EventEmitter {
         players: pl.map(p => ({ id: p.id, name: p.name, faction: p.faction, isBot: p.is_bot })),
       });
       if (tpm.tutorial) placeTutorialTarget(this.b, state);
+      // Купленный цвет знамени — если он не совпадает с цветом другого игрока партии.
+      const { rows: eq } = await tx.query(
+        'SELECT p.id, u.equipped_color FROM players p JOIN users u ON u.id=p.user_id WHERE p.match_id=$1 AND u.equipped_color IS NOT NULL', [matchId]);
+      for (const r of eq) {
+        const color = shopItem(r.equipped_color)?.color;
+        const p = state.players.find(x => x.id === r.id);
+        if (color && p && !state.players.some(x => x !== p && x.color.toLowerCase() === color.toLowerCase())) p.color = color;
+      }
       for (const p of state.players) await tx.query('UPDATE players SET color=$3 WHERE match_id=$1 AND id=$2', [matchId, p.id, p.color]);
       await saveMap(tx, matchId, world.map);
       await saveState(tx, state);
@@ -388,14 +397,15 @@ export class GameService extends EventEmitter {
     }
   }
 
-  async leaderboard(userId: number): Promise<{ top: { place: number; name: string; rating: number; games: number; wins: number; me: boolean }[]; me: { place: number; rating: number; games: number; wins: number } | null }> {
+  async leaderboard(userId: number): Promise<{ top: { place: number; name: string; rating: number; games: number; wins: number; me: boolean; crown: boolean }[]; me: { place: number; rating: number; games: number; wins: number } | null }> {
     const { rows } = await this.db.query(
-      `SELECT r.user_id, r.rating, r.games, r.wins, coalesce(u.first_name, u.username, 'Игрок') AS name, rank() OVER (ORDER BY r.rating DESC) AS place
+      `SELECT r.user_id, r.rating, r.games, r.wins, coalesce(u.first_name, u.username, 'Игрок') AS name, rank() OVER (ORDER BY r.rating DESC) AS place,
+              EXISTS (SELECT 1 FROM user_items i WHERE i.user_id=r.user_id AND i.item='badge_crown') AS crown
        FROM ratings r JOIN users u ON u.id=r.user_id WHERE r.games > 0 ORDER BY r.rating DESC, r.games DESC LIMIT 50`);
     const { rows: [me] } = await this.db.query(
       `SELECT rating, games, wins, (SELECT count(*)::int + 1 FROM ratings x WHERE x.games > 0 AND x.rating > r.rating) AS place FROM ratings r WHERE user_id=$1`, [userId]);
     return {
-      top: rows.map(r => ({ place: Number(r.place), name: r.name, rating: r.rating, games: r.games, wins: r.wins, me: Number(r.user_id) === userId })),
+      top: rows.map(r => ({ place: Number(r.place), name: r.name, rating: r.rating, games: r.games, wins: r.wins, me: Number(r.user_id) === userId, crown: r.crown })),
       me: me ? { place: me.place, rating: me.rating, games: me.games, wins: me.wins } : null,
     };
   }

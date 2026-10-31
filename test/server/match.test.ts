@@ -642,3 +642,45 @@ test('итоги и рейтинг: партия двух людей меняе�
   assert.equal(me.rating.rated, false);
   assert.equal(me.rating.after, me.rating.before);
 });
+
+test('лавка Stars: счёт, проверка перед оплатой, выдача один раз, цвет знамени в новой партии', async () => {
+  const { Shop } = await import('../../src/server/shop.ts');
+  const { TelegramBot } = await import('../../src/bot/telegram.ts');
+  const shop = new Shop(db);
+  const { rows: [u] } = await db.query(`INSERT INTO users (telegram_id, first_name) VALUES (990011, 'Покупатель') RETURNING id`);
+  const uid = Number(u.id);
+  assert.ok((await shop.list(uid)).items.every(i => !i.owned));
+  // Счёт создаётся через Bot API в XTR.
+  const calls: { m: string; body: any }[] = [];
+  const bot = new TelegramBot({ db, token: 'x', publicUrl: 'http://x', botUsername: 'b', log: () => {}, shop });
+  bot.api = (async (m: string, body: any) => (calls.push({ m, body }), m === 'createInvoiceLink' ? 'https://t.me/$invoice' : true)) as any;
+  const { link } = await shop.createInvoice(uid, 'color_gold', bot);
+  assert.equal(link, 'https://t.me/$invoice');
+  const inv = calls.find(c => c.m === 'createInvoiceLink')!.body;
+  assert.equal(inv.currency, 'XTR');
+  assert.equal(inv.prices[0].amount, 25);
+  // Проверка перед оплатой через обработчик бота.
+  const q = { id: 'q1', from: { id: 990011 }, currency: 'XTR', total_amount: 25, invoice_payload: inv.payload };
+  await bot.handleUpdate({ pre_checkout_query: q });
+  assert.equal(calls.at(-1)!.body.ok, true);
+  await bot.handleUpdate({ pre_checkout_query: { ...q, id: 'q2', total_amount: 1 } });
+  assert.equal(calls.at(-1)!.body.ok, false);
+  await bot.handleUpdate({ pre_checkout_query: { ...q, id: 'q3', from: { id: 5 } } });
+  assert.equal(calls.at(-1)!.body.ok, false, 'чужой аккаунт');
+  // Успешная оплата: выдача один раз, цвет сразу выбран.
+  const sp = { currency: 'XTR', total_amount: 25, invoice_payload: inv.payload, telegram_payment_charge_id: 'charge-1' };
+  await bot.handleUpdate({ message: { chat: { id: 990011, type: 'private' }, from: { id: 990011 }, successful_payment: sp } });
+  assert.equal(await shop.paid(sp), false, 'повторное уведомление не выдаёт товар дважды');
+  const after = await shop.list(uid);
+  assert.equal(after.items.find(i => i.id === 'color_gold')!.owned, true);
+  assert.equal(after.equippedColor, 'color_gold');
+  assert.equal((await db.query('SELECT count(*)::int AS n FROM purchases WHERE user_id=$1', [uid])).rows[0].n, 1);
+  await assert.rejects(shop.createInvoice(uid, 'color_gold', bot), /already_owned/);
+  await assert.rejects(shop.equip(uid, 'color_violet'), /not_owned/);
+  // Цвет применяется в новой партии.
+  const m = await game.createMatch(uid, 'vsbot', 'Покупатель', 'union');
+  const st = await loadState(db, m.id);
+  assert.equal(st.players.find(p => !p.isBot)!.color, '#d4a017');
+  await shop.equip(uid, null);
+  assert.equal((await shop.list(uid)).equippedColor, null);
+});

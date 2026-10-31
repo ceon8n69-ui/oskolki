@@ -5,6 +5,7 @@ import Fastify from 'fastify';
 import type { FastifyReply, FastifyRequest } from 'fastify';
 import fastifyStatic from '@fastify/static';
 import fastifyCompress from '@fastify/compress';
+import { Shop } from './shop.ts';
 import fastifyWebsocket from '@fastify/websocket';
 import type { WebSocket } from 'ws';
 import type { Balance } from '../shared/balance.ts';
@@ -90,6 +91,12 @@ export async function buildApp(deps: { cfg: ServerConfig; db: Db; game: GameServ
   app.delete('/api/matches/:id', async (req: FastifyRequest<{ Params: { id: string } }>) => game.deleteRoom(req.params.id, auth(req)));
   app.post('/api/matches/:id/leave', async (req: FastifyRequest<{ Params: { id: string } }>) => game.leaveRoom(req.params.id, auth(req)));
   app.post('/api/matches/:id/surrender', async (req: FastifyRequest<{ Params: { id: string } }>) => game.surrender(req.params.id, auth(req)));
+  // Лавка за Telegram Stars (только косметика).
+  const shop = new Shop(db, (m, e) => app.log.warn({ e }, m));
+  if (deps.bot) deps.bot.d.shop = shop;
+  app.get('/api/shop', async req => shop.list(auth(req)));
+  app.post('/api/shop/invoice', async (req: FastifyRequest<{ Body: { item?: string } }>) => shop.createInvoice(auth(req), String(req.body?.item ?? ''), deps.bot ?? null));
+  app.post('/api/shop/equip', async (req: FastifyRequest<{ Body: { item?: string | null } }>) => shop.equip(auth(req), req.body?.item ? String(req.body.item) : null));
   // Итоги, повтор хода, рейтинг.
   app.get('/api/matches/:id/summary', async (req: FastifyRequest<{ Params: { id: string } }>) => game.summary(req.params.id, auth(req)));
   app.get('/api/matches/:id/replay', async (req: FastifyRequest<{ Params: { id: string }; Querystring: { turn?: string } }>) => game.replay(req.params.id, auth(req), Number(req.query.turn)));
