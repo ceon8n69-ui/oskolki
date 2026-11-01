@@ -577,7 +577,7 @@ async function gameScreen() {
   client.on('state', () => renderAll());
   client.on('match', () => renderAll());
   // Отладка в браузере (?debug=1): программные нажатия для проверочных скриншотов.
-  if (new URLSearchParams(location.search).get('debug') === '1') (window as any).__osk = { tap: (x: number, y: number) => tap({ x, y }), select: (id: string | null) => select(id, !!id), client };
+  if (new URLSearchParams(location.search).get('debug') === '1') (window as any).__osk = { tap: (x: number, y: number) => tap({ x, y }), select: (id: string | null) => select(id, !!id), client, placements: () => [...buildingPlacements()] };
   client.on('turnResolved', ({ turn, events, before, after }) => {
     startPlayback(turn, events, before, after);
     showDigest(turn, events);
@@ -924,6 +924,12 @@ function tileCard(x: number, y: number): string {
     }
     if (t.features & 128) lines.push(`<div class="ts-line">Укрепление: защита отряда на клетке ×${BALANCE.forts.defenseMul}.</div>`);
     if (t.features & 1) lines.push('<div class="ts-line">Дорога: движение вдвое дешевле.</div>');
+    const pl = buildingPlacements().get(y * st.view.map.width + x);
+    if (pl) {
+      const pc = st.view.cities[pl.cityIdx];
+      title = BALANCE.buildings[pl.building].name;
+      lines.unshift(`<div class="ts-line">${pl.progress !== null ? `Строится · ${Math.round(pl.progress * 100)}% · ` : ''}Постройка города ${esc(pc.name)}: ${esc(buildingEffects(pl.building))}.</div>`);
+    }
     const o = st.view.structures.find(s => s.x === x && s.y === y);
     if (o) {
       title = 'Обелиск';
@@ -1588,6 +1594,218 @@ function drawTerritory(x: number, y: number, terr: Int16Array) {
   }
 }
 
+// ---------- постройки на карте ----------
+// Постройки города — городские (сервер не хранит клетку). Клиент детерминированно ставит каждую
+// на клетку территории города: лесопилку — к лесу, шахту — к холмам и железу, порт — к воде.
+interface Placed { cityIdx: number; building: string; progress: number | null }
+const placeCache = new WeakMap<object, { key: string; map: Map<number, Placed> }>();
+/** Однажды выбранная клетка здания сохраняется между ходами (матч:город:здание → клетка). */
+const placeMemory = new Map<string, number>();
+function placementScore(building: string, x: number, y: number): number {
+  const near = (pred: (t: NonNullable<ReturnType<typeof client.tile>>) => boolean) => {
+    let n = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      const t = client.tile(x + dx, y + dy);
+      if ((dx || dy) && t && pred(t)) n++;
+    }
+    return n;
+  };
+  const t = client.tile(x, y)!;
+  switch (building) {
+    case 'lumber_mill': return near(n => n.terrain === Terrain.Forest || !!(n.features & 16)) * 2;
+    case 'mine': return (t.terrain === Terrain.Hills ? 4 : 0) + near(n => !!(n.features & 96) || n.terrain === Terrain.Hills || n.terrain === Terrain.Mountain) * 2;
+    case 'farm': return (t.terrain === Terrain.Plains ? 3 : 0) + near(n => n.terrain === Terrain.Plains);
+    case 'port': return near(n => n.terrain <= Terrain.ShallowWater) > 0 ? 10 : -100;
+    default: return t.terrain === Terrain.Plains ? 2 : 0;
+  }
+}
+function buildingPlacements(): Map<number, Placed> {
+  const st = client.state!;
+  const key = st.view.cities.map(c => `${c.id}:${c.buildings.join(',')}:${c.queue[0]?.kind === 'building' ? c.queue[0].unitType + c.queue[0].progress : ''}`).join('|');
+  const hit = placeCache.get(st.view);
+  if (hit && hit.key === key) return hit.map;
+  const W = st.view.map.width;
+  const terr = territory();
+  const map = new Map<number, Placed>();
+  const cityTiles = new Set(st.view.cities.map(c => c.y * W + c.x));
+  let incomplete = false; // клетки ещё не загружены — не кешируем, пересчитаем в следующем кадре
+  st.view.cities.forEach((c, ci) => {
+    const head = c.queue[0];
+    const items: [string, number | null][] = [
+      ...c.buildings.filter(b => b !== 'walls').map(b => [b, null] as [string, null]),
+      ...(head && head.kind === 'building' && head.unitType !== 'walls' ? [[head.unitType, Math.min(1, head.progress / BALANCE.buildings[head.unitType].cost.production)] as [string, number]] : []),
+    ];
+    const unitTiles = new Set(st.view.units.map(u => u.y * W + u.x));
+    for (const [b, pr] of items) {
+      const memKey = `${st.match.id}:${c.id}:${b}`;
+      const kept = placeMemory.get(memKey);
+      if (kept !== undefined && !map.has(kept) && terr[kept] === ci) {
+        map.set(kept, { cityIdx: ci, building: b, progress: pr });
+        continue;
+      }
+      let best: { k: number; sc: number } | null = null;
+      for (let r = 1; r <= BALANCE.cities.materialRadius; r++) {
+        for (let y = c.y - r; y <= c.y + r; y++) for (let x = c.x - r; x <= c.x + r; x++) {
+          if (Math.max(Math.abs(x - c.x), Math.abs(y - c.y)) !== r) continue;
+          const t = client.tile(x, y);
+          const k = y * W + x;
+          if (!t && x >= 0 && y >= 0 && x < W && y < st.view.map.height) incomplete = true;
+          if (!t || t.terrain === 255 || terr[k] !== ci || cityTiles.has(k) || map.has(k)) continue;
+          if (t.terrain <= Terrain.ShallowWater || t.terrain === Terrain.Mountain || t.features & 116) continue;
+          // Ближнее кольцо важнее: штраф за удаление.
+          // Передние клетки (ближе к зрителю) видны, задние закрыты замком и отрядами на городе.
+          const front = x + y - (c.x + c.y);
+          const sc = placementScore(b, x, y) - (r - 1) * 3 - (t.terrain === Terrain.Forest ? 6 : 0) + (front > 0 ? 4 : front === 0 ? 1 : -3) - (unitTiles.has(k) ? 5 : 0);
+          if (!best || sc > best.sc) best = { k, sc };
+        }
+      }
+      if (best && best.sc > -50) {
+        map.set(best.k, { cityIdx: ci, building: b, progress: pr });
+        if (!incomplete) placeMemory.set(memKey, best.k);
+      }
+    }
+  });
+  if (!incomplete) placeCache.set(st.view, { key, map });
+  return map;
+}
+const BLD_ROOF: Record<string, string> = {
+  farm: '#c0503a', lumber_mill: '#7a4a24', mine: '#55555e', market: '#d9a441', barracks: '#3a4f7a', forge: '#4a4a52',
+  academy: '#7b5cc7', supply_depot: '#8a6a3e', port: '#2f6f8f',
+};
+/** Здание на клетке: объёмный домик своего вида, флажок владельца; строящееся — леса и полоса прогресса. */
+function drawBuildingStructure(x: number, y: number, pl: Placed) {
+  const st = client.state!;
+  const S = cam.size;
+  if (S < 14) return;
+  const { sx, sy } = tileToScreen(x, y);
+  if (sx < -S || sx > innerWidth + S || sy < -S * 2 || sy > innerHeight + S) return;
+  const c = st.view.cities[pl.cityIdx];
+  const color = st.view.players.find(p => p.id === c.owner)?.color ?? '#bbb';
+  const ghost = pl.progress !== null;
+  if (!ghost && drawLiveArtIso(ctx, `bld_${pl.building}`, sx, sy + S * 0.16, S)) return drawBuildingFlag(sx, sy, S, color, pl);
+  ctx.save();
+  // Тень и масштаб: здание занимает большую часть клетки, как в Polytopia.
+  ctx.fillStyle = '#0003';
+  ctx.beginPath(); ctx.ellipse(sx, sy + S * 0.04, S * 0.36, S * 0.16, 0, 0, Math.PI * 2); ctx.fill();
+  ctx.translate(sx, sy + S * 0.06);
+  ctx.scale(2.1, 2.1);
+  ctx.translate(-sx, -(sy + S * 0.06));
+  if (ghost) ctx.globalAlpha = 0.55;
+  const box = (cx: number, cy: number, w: number, d: number, h: number, wall: string, roof: string, roofH: number) => {
+    // w — полуширина по x, d — по y (в долях S), h — высота стен (px)
+    const L = { x: cx - w * S, y: cy }, R = { x: cx + d * S, y: cy }, F = { x: cx - w * S + d * S, y: cy + (w + d) * S / 2 };
+    const B = { x: cx, y: cy - 0 };
+    void B;
+    // левая стена
+    ctx.fillStyle = wall;
+    ctx.beginPath(); ctx.moveTo(L.x, L.y); ctx.lineTo(F.x, F.y); ctx.lineTo(F.x, F.y - h); ctx.lineTo(L.x, L.y - h); ctx.closePath(); ctx.fill();
+    // правая стена (темнее)
+    ctx.fillStyle = shadeHex(wall, 0.78);
+    ctx.beginPath(); ctx.moveTo(F.x, F.y); ctx.lineTo(R.x, R.y); ctx.lineTo(R.x, R.y - h); ctx.lineTo(F.x, F.y - h); ctx.closePath(); ctx.fill();
+    // двускатная крыша: конёк от середины левой-верхней грани к середине правой-нижней
+    const T = { x: L.x + d * S, y: L.y - d * S / 2 }; // задний угол
+    const top = (p: { x: number; y: number }) => ({ x: p.x, y: p.y - h });
+    const l = top(L), r = top(R), f = top(F), b = top(T);
+    const m1 = { x: (l.x + b.x) / 2, y: (l.y + b.y) / 2 - roofH }, m2 = { x: (f.x + r.x) / 2, y: (f.y + r.y) / 2 - roofH };
+    ctx.fillStyle = roof;
+    ctx.beginPath(); ctx.moveTo(l.x, l.y); ctx.lineTo(f.x, f.y); ctx.lineTo(m2.x, m2.y); ctx.lineTo(m1.x, m1.y); ctx.closePath(); ctx.fill();
+    ctx.fillStyle = shadeHex(roof, 0.75);
+    ctx.beginPath(); ctx.moveTo(f.x, f.y); ctx.lineTo(r.x, r.y); ctx.lineTo(m2.x, m2.y); ctx.closePath(); ctx.fill();
+    ctx.strokeStyle = '#0005'; ctx.lineWidth = 1;
+    ctx.beginPath(); ctx.moveTo(m1.x, m1.y); ctx.lineTo(m2.x, m2.y); ctx.stroke();
+    return { f, m2 };
+  };
+  const roof = BLD_ROOF[pl.building] ?? '#6d6354';
+  const gy = sy + S * 0.02;
+  switch (pl.building) {
+    case 'farm': {
+      // грядки и амбар
+      ctx.strokeStyle = '#e2c25a'; ctx.lineWidth = Math.max(1.5, S * 0.03);
+      for (let i = -2; i <= 2; i++) { ctx.beginPath(); ctx.moveTo(sx - S * 0.3 + i * S * 0.06, sy + S * 0.02 + i * S * 0.03); ctx.lineTo(sx + i * S * 0.06, sy + S * 0.17 + i * S * 0.03); ctx.stroke(); }
+      box(sx + S * 0.12, gy - S * 0.05, 0.11, 0.09, S * 0.12, '#e9dcc0', roof, S * 0.08);
+      break;
+    }
+    case 'lumber_mill': {
+      box(sx - S * 0.02, gy, 0.13, 0.11, S * 0.13, '#b88a5a', roof, S * 0.07);
+      ctx.fillStyle = '#8b5a2b';
+      for (let i = 0; i < 3; i++) { ctx.beginPath(); ctx.ellipse(sx + S * 0.2, sy + S * 0.08 - i * S * 0.045, S * 0.035, S * 0.025, 0, 0, Math.PI * 2); ctx.fill(); ctx.fillStyle = i % 2 ? '#8b5a2b' : '#e7c48f'; }
+      ctx.strokeStyle = '#ccd'; ctx.lineWidth = 1.5; ctx.beginPath(); ctx.arc(sx - S * 0.15, sy - S * 0.08, S * 0.05, 0, Math.PI * 2); ctx.stroke();
+      break;
+    }
+    case 'mine': {
+      ctx.fillStyle = '#8d8a80';
+      ctx.beginPath(); ctx.ellipse(sx, gy - S * 0.03, S * 0.26, S * 0.14, 0, Math.PI, 0); ctx.fill();
+      ctx.fillStyle = '#2a2a2e';
+      ctx.beginPath(); ctx.ellipse(sx + S * 0.03, gy - S * 0.02, S * 0.07, S * 0.08, 0, Math.PI, 0); ctx.fill();
+      ctx.strokeStyle = '#7a4a24'; ctx.lineWidth = Math.max(1.5, S * 0.025);
+      ctx.beginPath(); ctx.moveTo(sx - S * 0.05, gy - S * 0.02); ctx.lineTo(sx - S * 0.05, gy - S * 0.1); ctx.lineTo(sx + S * 0.11, gy - S * 0.1); ctx.lineTo(sx + S * 0.11, gy - S * 0.02); ctx.stroke();
+      ctx.fillStyle = '#cfd3d8'; ctx.fillRect(sx + S * 0.14, gy + S * 0.02, S * 0.08, S * 0.04);
+      break;
+    }
+    case 'market': {
+      box(sx, gy, 0.12, 0.1, S * 0.1, '#e9dcc0', roof, S * 0.05);
+      ctx.fillStyle = '#d6453d';
+      for (let i = 0; i < 4; i++) ctx.fillRect(sx - S * 0.12 + i * S * 0.06, gy + S * 0.02, S * 0.03, S * 0.04);
+      break;
+    }
+    case 'barracks': box(sx, gy, 0.16, 0.08, S * 0.12, '#cfc4ac', color, S * 0.06); break;
+    case 'forge': {
+      box(sx, gy, 0.12, 0.1, S * 0.12, '#8f8f98', roof, S * 0.05);
+      ctx.fillStyle = '#5a5a62'; ctx.fillRect(sx + S * 0.06, gy - S * 0.32, S * 0.05, S * 0.14);
+      ctx.fillStyle = '#ff9a3c'; ctx.beginPath(); ctx.arc(sx - S * 0.06, gy + S * 0.02, S * 0.025, 0, Math.PI * 2); ctx.fill();
+      break;
+    }
+    case 'academy': {
+      box(sx, gy, 0.12, 0.11, S * 0.14, '#efe6d2', '#efe6d2', 0);
+      ctx.fillStyle = roof; ctx.beginPath(); ctx.ellipse(sx, gy - S * 0.15, S * 0.1, S * 0.08, 0, Math.PI, 0); ctx.fill();
+      break;
+    }
+    case 'supply_depot': {
+      ctx.fillStyle = '#a77a45';
+      for (const [ox, oy] of [[-0.1, 0], [0.05, 0.04], [-0.02, -0.06]]) { ctx.fillRect(sx + ox * S - S * 0.05, gy + oy * S - S * 0.08, S * 0.1, S * 0.08); ctx.strokeStyle = '#6e4220'; ctx.strokeRect(sx + ox * S - S * 0.05, gy + oy * S - S * 0.08, S * 0.1, S * 0.08); }
+      break;
+    }
+    case 'port': {
+      ctx.fillStyle = '#8b5a2b'; ctx.fillRect(sx - S * 0.25, gy + S * 0.03, S * 0.5, S * 0.04);
+      box(sx - S * 0.05, gy - S * 0.02, 0.09, 0.08, S * 0.1, '#e9dcc0', roof, S * 0.05);
+      break;
+    }
+    default: box(sx, gy, 0.12, 0.1, S * 0.11, '#e9dcc0', roof, S * 0.06);
+  }
+  ctx.restore();
+  drawBuildingFlag(sx, sy, S, color, pl);
+}
+function drawBuildingFlag(sx: number, sy: number, S: number, color: string, pl: Placed) {
+  // флажок владельца
+  ctx.strokeStyle = '#3a2a1a'; ctx.lineWidth = Math.max(1, S * 0.015);
+  ctx.beginPath(); ctx.moveTo(sx - S * 0.3, sy + S * 0.02); ctx.lineTo(sx - S * 0.3, sy - S * 0.42); ctx.stroke();
+  ctx.fillStyle = color;
+  ctx.beginPath(); ctx.moveTo(sx - S * 0.3, sy - S * 0.42); ctx.lineTo(sx - S * 0.14, sy - S * 0.37); ctx.lineTo(sx - S * 0.3, sy - S * 0.32); ctx.closePath(); ctx.fill();
+  if (pl.progress !== null) {
+    // строится: полоса прогресса
+    const w = S * 0.4;
+    ctx.fillStyle = '#000a'; ctx.fillRect(sx - w / 2, sy + S * 0.14, w, 5);
+    ctx.fillStyle = '#7ef0a0'; ctx.fillRect(sx - w / 2 + 1, sy + S * 0.14 + 1, (w - 2) * pl.progress, 3);
+  }
+  if (S >= 56) {
+    const label = BALANCE.buildings[pl.building].name + (pl.progress !== null ? ' · стройка' : '');
+    ctx.font = 'bold 10px system-ui'; ctx.textAlign = 'center';
+    const tw = ctx.measureText(label).width + 8;
+    ctx.fillStyle = '#000a'; ctx.fillRect(sx - tw / 2, sy + S * 0.2, tw, 14);
+    ctx.fillStyle = '#fff'; ctx.fillText(label, sx, sy + S * 0.2 + 10.5);
+  }
+}
+function shadeHex(hex: string, k: number): string {
+  const n = parseInt(hex.slice(1, 7), 16);
+  return shade([(n >> 16) & 255, (n >> 8) & 255, n & 255], k);
+}
+const BLD_EFFECT: Record<string, (v: number) => string> = {
+  food: v => `еда +${v}`, production: v => `производство +${v}`, gold: v => `золото +${v}`, knowledge: v => `знания +${v}`, iron: v => `железо +${v}`,
+  woodPerTile: v => `+${v} древесины с каждого месторождения`, ironPerTile: v => `+${v} железа с каждого месторождения`, crystalPerTile: v => `+${v} кристалл с каждого месторождения`,
+  unitProduction: v => `найм быстрее (+${v} ⚒)`, recruitXp: v => `новобранцы с опытом +${v}`, cityDefense: v => `защита города +${v}`, supplyRadius: v => `снабжение +${v}`,
+};
+const buildingEffects = (id: string) => Object.entries(BALANCE.buildings[id].effects as Record<string, number>).map(([k, v]) => BLD_EFFECT[k]?.(v) ?? `${k} ${v}`).join(', ');
+
 const RES_RULE: Record<number, { name: string; mat: 'wood' | 'iron' | 'crystal'; building: string; text: string }> = {
   16: { name: 'Древесина', mat: 'wood', building: 'lumber_mill', text: 'Город, в территории которого лежит месторождение, получает +1 древесины в ход; с Лесопилкой — ещё +1 за каждое месторождение.' },
   32: { name: 'Железо', mat: 'iron', building: 'mine', text: 'Город получает +1 железа в ход; с Шахтой — ещё +1 за каждое месторождение.' },
@@ -1799,6 +2017,8 @@ function frame(now: number) {
     (layers.get(d) ?? layers.set(d, []).get(d)!).push(fn);
   };
   for (const c of st.view.cities) put(c.x, c.y, () => drawCity(c));
+  const placed = buildingPlacements();
+  for (const [k, pl] of placed) put(k % W0, Math.floor(k / W0), () => drawBuildingStructure(k % W0, Math.floor(k / W0), pl));
   for (const o of st.view.structures) put(o.x, o.y, () => drawObelisk(o));
   for (const o of st.view.mode.objectives) put(o.x, o.y, () => {
     const { sx, sy } = tileToScreen(o.x, o.y);
@@ -1950,6 +2170,16 @@ function drawCity(c: StateResponse['view']['cities'][number]) {
     ctx.fillStyle = color;
     ctx.fillRect(sx - S * 0.26, sy - S * 0.5, S * 0.52, S * 0.1);
   }
+  if (c.buildings.includes('walls') && S >= 14) {
+    // Стены: каменный пояс по краю клетки города
+    ctx.strokeStyle = '#8f8a80';
+    ctx.lineWidth = Math.max(3, S * 0.07);
+    diamond(sx, sy, S, 0.98);
+    ctx.stroke();
+    ctx.strokeStyle = '#c9c2b2';
+    ctx.lineWidth = Math.max(1, S * 0.025);
+    ctx.stroke();
+  }
   if (c.contestedBy) {
     ctx.strokeStyle = '#e0614f';
     ctx.setLineDash([5, 4]);
@@ -1978,7 +2208,8 @@ function drawCityOverlay(c: StateResponse['view']['cities'][number]) {
   // Постройки: готовые и строящаяся (с кольцом прогресса).
   const head = c.queue[0];
   const building = head && head.kind === 'building' ? head : null;
-  const items: [string, number | null][] = [...c.buildings.map(b => [b, null] as [string, null]), ...(building ? [[building.unitType, Math.min(1, building.progress / BALANCE.buildings[building.unitType].cost.production)] as [string, number]] : [])];
+  const items: [string, number | null][] = [...c.buildings.map(b => [b, null] as [string, null]), ...(building ? [[building.unitType, Math.min(1, building.progress / BALANCE.buildings[building.unitType].cost.production)] as [string, number]] : [])]
+    .filter(([b]) => b !== 'walls');
   if (S >= 26 && items.length) {
     const r = Math.max(7, Math.min(12, S * 0.11));
     const gap = r * 2 + 3;
