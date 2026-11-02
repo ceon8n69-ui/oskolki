@@ -1,3 +1,4 @@
+import { drawCityBuildings } from './building-art.ts';
 import { loadLiveArt, drawLiveArtIso } from './live-art.ts';
 import { renderTechTree } from './techtree.ts';
 import { loadTechAtlas, factionIcon, glyphPaths, BUILDING_GLYPH, buildingIcon } from './tech-icons.ts';
@@ -68,8 +69,7 @@ function toast(text: string) {
 }
 const esc = (s: string) => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!);
 
-// ===================== вход и лобби =====================
-
+// ===================== вход и лобби ==============
 async function boot() {
   void loadLiveArt();
   void loadTechAtlas();
@@ -246,8 +246,7 @@ function syncBack() {
 }
 tg?.BackButton?.onClick?.(() => backStack[backStack.length - 1]?.());
 
-// ===================== «Мои партии» =====================
-
+// ===================== «Мои партии» ==============
 type RoomTab = 'active' | 'waiting' | 'finished' | 'archive';
 let roomTab: RoomTab = 'active';
 
@@ -496,8 +495,7 @@ async function openMatch(id: string) {
   await gameScreen();
 }
 
-// ===================== игровой экран =====================
-
+// ===================== игровой экран ==============
 let cam = { x: 16, y: 16, size: 72 };
 let selected: string | null = null;
 let selectedCity: string | null = null;
@@ -2163,6 +2161,8 @@ function drawCity(c: StateResponse['view']['cities'][number]) {
   ctx.strokeStyle = color;
   ctx.lineWidth = 2;
   ctx.stroke();
+  const faction = st.view.players.find(p => p.id === c.owner)?.faction ?? 'union';
+  drawCityBuildings(ctx, c, faction, sx, sy, S, false);
   const scale = 0.75 + Math.min(c.level, 5) * 0.08;
   if (!drawLiveArtIso(ctx, 'castle', sx, sy + S * 0.2, S, c.visibleNow ? 1 : 0.5, scale)) {
     ctx.fillStyle = '#d8cfb8';
@@ -2170,6 +2170,7 @@ function drawCity(c: StateResponse['view']['cities'][number]) {
     ctx.fillStyle = color;
     ctx.fillRect(sx - S * 0.26, sy - S * 0.5, S * 0.52, S * 0.1);
   }
+  drawCityBuildings(ctx, c, faction, sx, sy, S, true);
   if (c.buildings.includes('walls') && S >= 14) {
     // Стены: каменный пояс по краю клетки города
     ctx.strokeStyle = '#8f8a80';
