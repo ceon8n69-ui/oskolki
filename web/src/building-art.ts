@@ -15,23 +15,15 @@ export function buildingArtUrl(faction: string, id: string, state: string): stri
 }
 const images = new Map<string, HTMLImageElement>();
 const failed = new Set<string>();
-export function drawCityBuildings(ctx: CanvasRenderingContext2D, city: ViewCity, faction: string, x: number, y: number, size: number, front: boolean) {
-  if (size < 22 || new URLSearchParams(location.search).get('graphics') === '0') return;
-  for (const item of cityBuildingSprites(city)) {
-    // Fixed slots prevent buildings moving when another construction finishes.
-    const angle = (item.slot / 10) * Math.PI * 2;
-    const dy = Math.sin(angle) * size * .42;
-    if ((dy >= 0) !== front) continue;
-    const url = buildingArtUrl(faction, item.id, item.state);
-    if (failed.has(url)) continue;
-    let image = images.get(url);
-    if (!image) {
-      image = new Image(); image.onerror = () => failed.add(url); image.src = url; images.set(url, image);
-    }
-    if (!image.complete || !image.naturalWidth) continue;
-    const h = size * .57, w = h * image.naturalWidth / image.naturalHeight;
-    ctx.save(); ctx.globalAlpha *= city.visibleNow ? 1 : .5;
-    ctx.drawImage(image, x + Math.cos(angle) * size * .77 - w / 2, y + dy - h, w, h);
-    ctx.restore();
+
+/** Спрайт постройки народа (готовая или стройка); null — ещё не загружен или файла нет. */
+export function buildingImage(faction: string, id: string, state: 'ready' | 'construction'): HTMLImageElement | null {
+  if (new URLSearchParams(location.search).get('graphics') === '0') return null;
+  const url = buildingArtUrl(faction, id, state);
+  if (failed.has(url)) return null;
+  let image = images.get(url);
+  if (!image) {
+    image = new Image(); image.onerror = () => failed.add(url); image.src = url; images.set(url, image);
   }
+  return image.complete && image.naturalWidth ? image : null;
 }

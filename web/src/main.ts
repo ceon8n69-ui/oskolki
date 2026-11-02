@@ -1,4 +1,4 @@
-import { drawCityBuildings } from './building-art.ts';
+import { buildingImage } from './building-art.ts';
 import { loadLiveArt, drawLiveArtIso } from './live-art.ts';
 import { renderTechTree } from './techtree.ts';
 import { loadTechAtlas, factionIcon, glyphPaths, BUILDING_GLYPH, buildingIcon } from './tech-icons.ts';
@@ -1630,8 +1630,8 @@ function buildingPlacements(): Map<number, Placed> {
   st.view.cities.forEach((c, ci) => {
     const head = c.queue[0];
     const items: [string, number | null][] = [
-      ...c.buildings.filter(b => b !== 'walls').map(b => [b, null] as [string, null]),
-      ...(head && head.kind === 'building' && head.unitType !== 'walls' ? [[head.unitType, Math.min(1, head.progress / BALANCE.buildings[head.unitType].cost.production)] as [string, number]] : []),
+      ...c.buildings.map(b => [b, null] as [string, null]),
+      ...(head && head.kind === 'building' ? [[head.unitType, Math.min(1, head.progress / BALANCE.buildings[head.unitType].cost.production)] as [string, number]] : []),
     ];
     const unitTiles = new Set(st.view.units.map(u => u.y * W + u.x));
     for (const [b, pr] of items) {
@@ -1680,7 +1680,18 @@ function drawBuildingStructure(x: number, y: number, pl: Placed) {
   const c = st.view.cities[pl.cityIdx];
   const color = st.view.players.find(p => p.id === c.owner)?.color ?? '#bbb';
   const ghost = pl.progress !== null;
-  if (!ghost && drawLiveArtIso(ctx, `bld_${pl.building}`, sx, sy + S * 0.16, S)) return drawBuildingFlag(sx, sy, S, color, pl);
+  // Арт народа (web/art/buildings/<народ>/<здание>-ready|construction.webp); без него — процедурный домик.
+  const faction = st.view.players.find(p => p.id === c.owner)?.faction ?? 'union';
+  const img = buildingImage(faction, pl.building, ghost ? 'construction' : 'ready');
+  if (img) {
+    const w = S * 1.08, h = (w * img.naturalHeight) / img.naturalWidth;
+    ctx.save();
+    ctx.globalAlpha *= c.visibleNow ? 1 : 0.6;
+    ctx.drawImage(img, sx - w / 2, sy + S * 0.3 - h, w, h);
+    ctx.restore();
+    return drawBuildingFlag(sx, sy, S, color, pl, true);
+  }
+  if (pl.building === 'walls') return; // без арта стены рисуются поясом вокруг города
   ctx.save();
   // Тень и масштаб: здание занимает большую часть клетки, как в Polytopia.
   ctx.fillStyle = '#0003';
@@ -1773,12 +1784,22 @@ function drawBuildingStructure(x: number, y: number, pl: Placed) {
   ctx.restore();
   drawBuildingFlag(sx, sy, S, color, pl);
 }
-function drawBuildingFlag(sx: number, sy: number, S: number, color: string, pl: Placed) {
+function drawBuildingFlag(sx: number, sy: number, S: number, color: string, pl: Placed, art = false) {
+  if (art) {
+    // у арта свои флаги — показываем владельца маленькой меткой у основания
+    ctx.beginPath(); ctx.arc(sx - S * 0.3, sy + S * 0.08, Math.max(3, S * 0.045), 0, Math.PI * 2);
+    ctx.fillStyle = color; ctx.fill(); ctx.strokeStyle = '#fff'; ctx.lineWidth = 1.5; ctx.stroke();
+  } else drawFlagPole(sx, sy, S, color);
+  drawBuildingLabel(sx, sy, S, pl);
+}
+function drawFlagPole(sx: number, sy: number, S: number, color: string) {
   // флажок владельца
   ctx.strokeStyle = '#3a2a1a'; ctx.lineWidth = Math.max(1, S * 0.015);
   ctx.beginPath(); ctx.moveTo(sx - S * 0.3, sy + S * 0.02); ctx.lineTo(sx - S * 0.3, sy - S * 0.42); ctx.stroke();
   ctx.fillStyle = color;
   ctx.beginPath(); ctx.moveTo(sx - S * 0.3, sy - S * 0.42); ctx.lineTo(sx - S * 0.14, sy - S * 0.37); ctx.lineTo(sx - S * 0.3, sy - S * 0.32); ctx.closePath(); ctx.fill();
+}
+function drawBuildingLabel(sx: number, sy: number, S: number, pl: Placed) {
   if (pl.progress !== null) {
     // строится: полоса прогресса
     const w = S * 0.4;
@@ -2161,8 +2182,6 @@ function drawCity(c: StateResponse['view']['cities'][number]) {
   ctx.strokeStyle = color;
   ctx.lineWidth = 2;
   ctx.stroke();
-  const faction = st.view.players.find(p => p.id === c.owner)?.faction ?? 'union';
-  drawCityBuildings(ctx, c, faction, sx, sy, S, false);
   const scale = 0.75 + Math.min(c.level, 5) * 0.08;
   if (!drawLiveArtIso(ctx, 'castle', sx, sy + S * 0.2, S, c.visibleNow ? 1 : 0.5, scale)) {
     ctx.fillStyle = '#d8cfb8';
@@ -2170,8 +2189,8 @@ function drawCity(c: StateResponse['view']['cities'][number]) {
     ctx.fillStyle = color;
     ctx.fillRect(sx - S * 0.26, sy - S * 0.5, S * 0.52, S * 0.1);
   }
-  drawCityBuildings(ctx, c, faction, sx, sy, S, true);
-  if (c.buildings.includes('walls') && S >= 14) {
+  const wallArt = buildingImage(st.view.players.find(p => p.id === c.owner)?.faction ?? 'union', 'walls', 'ready');
+  if (c.buildings.includes('walls') && S >= 14 && !wallArt) {
     // Стены: каменный пояс по краю клетки города
     ctx.strokeStyle = '#8f8a80';
     ctx.lineWidth = Math.max(3, S * 0.07);
@@ -2211,6 +2230,10 @@ function drawCityOverlay(c: StateResponse['view']['cities'][number]) {
   const building = head && head.kind === 'building' ? head : null;
   const items: [string, number | null][] = [...c.buildings.map(b => [b, null] as [string, null]), ...(building ? [[building.unitType, Math.min(1, building.progress / BALANCE.buildings[building.unitType].cost.production)] as [string, number]] : [])]
     .filter(([b]) => b !== 'walls');
+  // Значки — только для зданий, которых не видно артом на карте (нет клетки или спрайта).
+  const fac = client.state!.view.players.find(p => p.id === c.owner)?.faction ?? 'union';
+  const shown = new Set([...buildingPlacements().values()].filter(p => client.state!.view.cities[p.cityIdx]?.id === c.id && buildingImage(fac, p.building, p.progress === null ? 'ready' : 'construction')).map(p => p.building));
+  items.splice(0, items.length, ...items.filter(([b]) => !shown.has(b)));
   if (S >= 26 && items.length) {
     const r = Math.max(7, Math.min(12, S * 0.11));
     const gap = r * 2 + 3;
