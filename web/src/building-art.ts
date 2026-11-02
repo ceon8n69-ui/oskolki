@@ -27,3 +27,21 @@ export function buildingImage(faction: string, id: string, state: 'ready' | 'con
   }
   return image.complete && image.naturalWidth ? image : null;
 }
+
+/** Отряды народов: web/art/units/<народ>/<тип>.webp (фигура стоит на нижнем крае, прозрачный фон). */
+export function unitArtUrl(faction: string, type: string): string {
+  return `./art/units/${faction}/${type}.webp`;
+}
+export function unitImage(faction: string, type: string): HTMLImageElement | null {
+  if (new URLSearchParams(location.search).get('graphics') === '0') return null;
+  // Сначала арт народа, затем общий (units/common), иначе — запасная отрисовка.
+  return loadUnit(unitArtUrl(faction, type)) ?? loadUnit(unitArtUrl('common', type));
+}
+function loadUnit(url: string): HTMLImageElement | null {
+  if (failed.has(url)) return null;
+  let image = images.get(url);
+  if (!image) {
+    image = new Image(); image.onerror = () => failed.add(url); image.src = url; images.set(url, image);
+  }
+  return image.complete && image.naturalWidth ? image : null;
+}

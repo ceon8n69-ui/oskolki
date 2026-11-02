@@ -24,26 +24,30 @@
 - 512×512 px, миниатюра сообщения, которое игрок пересылает в чат (приглашение, итог партии, «позвать друга»).
 - Сейчас временная: корона и название. Заменить на арт с логотипом.
 
-## 4. Отряды
+## 4. Отряды — подключение готово, нужны файлы
 
-Уже нарисованы (`kingdom-atlas.png`, `starter-units-v1.png`): infantry, commander, scout, shieldbearer, archer.
+Файлы: `web/art/units/<народ>/<тип>.webp`. Если у народа нет своего файла, берётся `web/art/units/common/<тип>.webp`, а если нет и его — старый стартовый набор или запасная фигура. Код: `unitImage` в `web/src/building-art.ts`; рисуется на карте и на портретах в карточках.
 
-Ещё нужны (2.5D, стоят на ромбе клетки, см. `RENDERER_CONTRACT.md`):
+- Холст квадратный или вертикальный, фон прозрачный, фигура обрезана по краям. Ноги на нижнем крае: низ картинки ставится на центр клетки. Высота на карте — одна ширина клетки.
+- Цвет владельца рисуется кодом (кольцо под фигурой и флажок у полосы здоровья), поэтому спрайт может быть в цветах народа.
+- Народы: union, forest, mountain, tide, ash, ruins, steppe, north.
 
-| Тип | Народ | Что это |
-|---|---|---|
-| spearman, cavalry, siege, engineer | общие | копейщик, всадник, катапульта, инженер |
-| transport, warship | общие | транспорт, боевой корабль |
-| legionary, standard | Союз городов | легионер, знаменосец |
-| ranger, warden | Лесные хранители | следопыт, страж рощи |
-| ironclad, bombard | Горные кланы | латник, бомбарда |
-| corsair, tidecaller | Народ Приливов | корсар, заклинатель приливов |
-| raider, firebrand | Пепельные орды | налётчик, метатель огня |
-| runesmith, sentinel | Хранители руин | рунный мастер, пробуждённый страж |
-| horse_archer, khan_guard | Степные ханства (новые) | конный лучник, ханская гвардия |
-| berserker, huscarl | Северные ярлы (новые) | берсерк, хускарл |
+Общие отряды (у каждого народа свой вид или один на всех в `common`): scout, infantry, shieldbearer, spearman, archer, cavalry, siege, engineer, transport, warship, commander.
 
-Цвет владельца рисуется кодом поверх (знамя или обводка), поэтому спрайт делается нейтральным, без цвета народа на основных деталях.
+Особые отряды народа:
+
+| Народ | Отряды |
+|---|---|
+| union | legionary, standard |
+| forest | ranger, warden |
+| mountain | ironclad, bombard |
+| tide | corsair, tidecaller |
+| ash | raider, firebrand |
+| ruins | runesmith, sentinel |
+| steppe | horse_archer, khan_guard |
+| north | berserker, huscarl |
+
+Пример: `web/art/units/ash/raider.webp`, `web/art/units/common/cavalry.webp`.
 
 ## 5. Постройки городов на карте — подключено
 
