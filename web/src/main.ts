@@ -1,4 +1,4 @@
-import { buildingImage } from './building-art.ts';
+import { buildingImage, unitImage } from './building-art.ts';
 import { loadLiveArt, drawLiveArtIso } from './live-art.ts';
 import { renderTechTree } from './techtree.ts';
 import { loadTechAtlas, factionIcon, glyphPaths, BUILDING_GLYPH, buildingIcon } from './tech-icons.ts';
@@ -871,15 +871,21 @@ function unitAbilities(u: ViewUnit): { id: string; label: string }[] {
   return out;
 }
 
-function portrait(type: string, color: string): string {
-  return `<canvas class="portrait" width="112" height="112" data-type="${type}" data-color="${color}" aria-hidden="true"></canvas>`;
+function portrait(type: string, color: string, faction = ''): string {
+  return `<canvas class="portrait" width="112" height="112" data-type="${type}" data-color="${color}" data-faction="${faction}" aria-hidden="true"></canvas>`;
 }
+/** Пока нет своего арта — похожая фигура из общего набора. */
+const UNIT_ART_ALIAS: Record<string, string> = { spearman: 'shieldbearer', legionary: 'shieldbearer', huscarl: 'shieldbearer', ranger: 'archer', standard: 'infantry', berserker: 'infantry' };
 function paintPortraits(root: HTMLElement) {
   root.querySelectorAll<HTMLCanvasElement>('canvas.portrait').forEach(cv => {
     const c = cv.getContext('2d')!;
     c.clearRect(0, 0, 112, 112);
     const type = cv.dataset.type!;
-    if (!drawLiveArtIso(c, type, 56, 108, 104)) {
+    const pimg = cv.dataset.faction ? unitImage(cv.dataset.faction, type) : null;
+    if (pimg) {
+      const h = 104, w = (h * pimg.naturalWidth) / pimg.naturalHeight;
+      c.drawImage(pimg, 56 - w / 2, 108 - h, w, h);
+    } else if (!drawLiveArtIso(c, UNIT_ART_ALIAS[type] ?? type, 56, 108, 104)) {
       c.fillStyle = cv.dataset.color!;
       c.beginPath();
       c.arc(56, 56, 40, 0, Math.PI * 2);
@@ -959,7 +965,7 @@ function renderCard() {
     const color = owner?.color ?? '#999';
     const ord = st.orders.find(o => o.subject === `unit:${u.id}`);
     const effects = u.statuses.map(s => BALANCE.effects[s.id]?.name ?? s.id);
-    html = `<div class="card-row">${portrait(u.type, color)}
+    html = `<div class="card-row">${portrait(u.type, color, owner?.faction ?? '')}
       <div class="card-main"><div class="card-title"><span class="dot" style="background:${color}"></span><b>${esc(rule.name)}</b>${mine ? '' : `<span class="muted"> · ${esc(owner?.name ?? 'нейтрал')}</span>`}</div>
         <div class="muted">${RANKS[u.rank] ?? ''}${effects.length ? ' · ' + esc(effects.join(', ')) : ''}</div>
         ${hpBar(u.hp, u.maxHp)}
@@ -1219,7 +1225,7 @@ function renderPanel() {
     body = mine.map(u => {
       const ord = st.orders.find(o => o.subject === `unit:${u.id}`);
       const rule = BALANCE.units[u.type];
-      return `<div class="item">${portrait(u.type, st.view.players.find(p => p.id === me.id)?.color ?? '#36c')}<div class="grow"><b>${esc(rule.name)}</b><div class="muted">Здоровье ${u.hp}/${u.maxHp} · ${ord ? describeOrder(ord.order) : u.carriedBy ? 'на борту' : 'без приказа'}${u.pendingPerks ? ' · новый ранг' : ''}</div></div>
+      return `<div class="item">${portrait(u.type, st.view.players.find(p => p.id === me.id)?.color ?? '#36c', me.faction)}<div class="grow"><b>${esc(rule.name)}</b><div class="muted">Здоровье ${u.hp}/${u.maxHp} · ${ord ? describeOrder(ord.order) : u.carriedBy ? 'на борту' : 'без приказа'}${u.pendingPerks ? ' · новый ранг' : ''}</div></div>
         <button class="btn sm" data-map-unit="${u.id}">${icon('map')}На карте</button></div>`;
     }).join('') || '<p class="empty">Нет отрядов</p>';
   } else if (panel === 'economy') {
@@ -2049,7 +2055,7 @@ function frame(now: number) {
   for (const su of st.view.staleUnits) put(su.x, su.y, () => {
     const { sx, sy } = tileToScreen(su.x, su.y);
     ctx.globalAlpha = 0.35;
-    drawUnit(sx, sy, su.type, st.view.players.find(p => p.id === su.owner)?.color ?? '#999', su.hp, false);
+    drawUnit(sx, sy, su.type, st.view.players.find(p => p.id === su.owner)?.color ?? '#999', su.hp, false, false, 0, st.view.players.find(p => p.id === su.owner)?.faction);
     ctx.globalAlpha = 1;
   });
   const { units, floats } = displayUnits(now);
@@ -2058,7 +2064,7 @@ function frame(now: number) {
     const ux = u.x + (u.dx ?? 0), uy = u.y + (u.dy ?? 0);
     put(ux, uy, () => {
       const { sx, sy } = tileToScreen(ux, uy);
-      drawUnit(sx, sy, u.type, st.view.players.find(p => p.id === u.owner)?.color ?? '#999', u.hp, u.id === selected, u.statuses.some(s => s.id === 'fortified'), u.maxHp);
+      drawUnit(sx, sy, u.type, st.view.players.find(p => p.id === u.owner)?.color ?? '#999', u.hp, u.id === selected, u.statuses.some(s => s.id === 'fortified'), u.maxHp, st.view.players.find(p => p.id === u.owner)?.faction);
       if (u.cargo) {
         ctx.fillStyle = '#fff';
         ctx.font = 'bold 11px system-ui';
@@ -2265,7 +2271,7 @@ function drawObelisk(o: StateResponse['view']['structures'][number]) {
   ctx.fillRect(sx - S * 0.02, sy - S * 0.5, S * 0.04, S * 0.3);
 }
 
-function drawUnit(sx: number, sy: number, type: string, color: string, hp: number, sel: boolean, fort = false, maxHp = 0) {
+function drawUnit(sx: number, sy: number, type: string, color: string, hp: number, sel: boolean, fort = false, maxHp = 0, faction = '') {
   const S = cam.size;
   // Тень и кольцо владельца на земле.
   ctx.fillStyle = '#0006';
@@ -2274,7 +2280,13 @@ function drawUnit(sx: number, sy: number, type: string, color: string, hp: numbe
   ctx.lineWidth = sel ? 4 : 3;
   ctx.beginPath(); ctx.ellipse(sx, sy + S * 0.02, S * 0.3, S * 0.14, 0, 0, Math.PI * 2); ctx.stroke();
   let top = sy - S * 0.85;
-  if (!drawLiveArtIso(ctx, type, sx, sy + S * 0.04, S)) {
+  const uimg = faction ? unitImage(faction, type) : null;
+  if (uimg) {
+    // Арт народа: фигура стоит нижним краем на точке земли клетки.
+    const h = S * (BALANCE.units[type]?.class === 'naval' ? 0.9 : 1.0), w = (h * uimg.naturalWidth) / uimg.naturalHeight;
+    ctx.drawImage(uimg, sx - w / 2, sy + S * 0.06 - h, w, h);
+    top = sy + S * 0.06 - h * 0.92;
+  } else if (!drawLiveArtIso(ctx, UNIT_ART_ALIAS[type] ?? type, sx, sy + S * 0.04, S)) {
     // Условная фигура: столб с щитом в цвете владельца.
     const naval = BALANCE.units[type]?.class === 'naval';
     if (naval) {
